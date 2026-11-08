@@ -13,7 +13,7 @@ import sys, time, os, math
 import pythoncom
 import win32com.client as wc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acadkb import Drafter, retry, PDF_MEDIA, PDF_PC3, ensure_pdf_pc3
+from acad_common import retry, PDF_MEDIA, PDF_PC3, SHEETS, setup_doc
 import com_filter
 import json as _json
 try:      # 标题栏默认值（学校、班级、设计人），换环境只改 config.json
@@ -123,8 +123,7 @@ class Sheet:
         doc = self._once(lambda: a.Documents.Open(self.src), lambda: self._find_doc(self.src), "打开 " + self.src)
         retry(lambda: doc.Activate()); self.doc = doc
         self._idle()
-        dr = Drafter.__new__(Drafter); dr.S = self.S; dr.acad = a; dr.doc = doc
-        retry(dr._setup)                         # 国标图层 / HZ 字体 / GB 标注样式
+        retry(lambda: setup_doc(doc, a, self.S))                         # 国标图层 / HZ 字体 / GB 标注样式
         self.ms = retry(lambda: doc.ModelSpace)
         self._idle()
         self._relayer()
@@ -407,7 +406,6 @@ class Sheet:
 
     def frame(self):
         """国标横放图框（留装订边），返回内框 (x0, y0, x1, y1)。1:1 出图时图纸 mm = 模型 mm。"""
-        from acadkb import SHEETS
         B, L, a, c = SHEETS[self.sheet]
         self._rect(0, 0, L, B, "细实线")
         self.inner = (a, c, L - c, B - c)
@@ -981,7 +979,6 @@ class Sheet:
                 e.TrueColor = bylayer
             for e, c in dims_old:
                 e.TextColor = c
-        from acadkb import SHEETS
         from scipy import ndimage
         Bh, Lw = SHEETS[self.sheet][0], SHEETS[self.sheet][1]
         page = fitz.open(pdf)[0]

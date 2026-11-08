@@ -1,7 +1,7 @@
 """SolidWorks 2025 COM 建模辅助：连接、新建零件、草图、拉伸/切除、保存、导出。
 
 只用来建 3D 模型（给论文插图、算质量、ANSYS 导入 STEP）。
-不要用 SolidWorks 自动工程图交付：AutoDimension 排得很乱、轴测图比例失控、标题栏空白 —— 2D 图一律走 acadkb。
+不要用 SolidWorks 自动工程图交付：AutoDimension 排得很乱、轴测图比例失控、标题栏空白 —— 2D 图一律走 sw_views + sw2acad。
 """
 import os
 import pythoncom

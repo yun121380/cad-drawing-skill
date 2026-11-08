@@ -1,9 +1,9 @@
 ---
 name: cad-drawing
-description: 出国标二维工程图（零件图/剖视/尺寸/粗糙度/形位公差/标题栏，出 DWG+PDF）和 SolidWorks 2025 建 3D 零件。默认路线：SolidWorks 只出投影→导 DWG→AutoCAD 2024 里纯 COM 整理标注，不碰键鼠；也保留 AutoCAD 模拟键盘逐笔画的老路线。用户提到 AutoCAD、CAD 画图、零件图、工程图、图纸、出图、SolidWorks、SW 建模、三维模型、毕设图纸、"模拟键鼠画"时使用。
+description: 出国标二维工程图（零件图/剖视/尺寸/粗糙度/形位公差/标题栏，出 DWG+PDF）和 SolidWorks 2025 建 3D 零件。做法：SolidWorks 只出投影→导 DWG→AutoCAD 2024 里纯 COM 整理标注，不碰键鼠。用户提到 AutoCAD、CAD 画图、零件图、工程图、图纸、出图、SolidWorks、SW 建模、三维模型、毕设图纸、装配图、标准件时使用。
 ---
 
-# 国标工程图：SolidWorks 投影 + AutoCAD 整理（另有键盘逐笔画）
+# 国标工程图：SolidWorks 投影 + AutoCAD 整理
 
 目录 `$K` = 本 skill 的安装目录（如 `%USERPROFILE%\.claude\skills\cad-drawing`，bash 里写 `~/.claude/skills/cad-drawing`）。范例脚本按相对路径找 `scripts/`，模型和输出放在脚本旁边的 `models/`、`out/`（没有就先建）。
 
@@ -11,9 +11,9 @@ description: 出国标二维工程图（零件图/剖视/尺寸/粗糙度/形位
 cad-drawing/
 ├── SKILL.md
 ├── scripts/
-│   ├── sw_views.py     SW 出视图（A 路线第 1 步）
-│   ├── sw2acad.py      AutoCAD COM 整理标注（A 路线第 2 步）
-│   ├── acadkb.py       AutoCAD 键盘逐笔画库（B 路线）
+│   ├── sw_views.py     SW 出视图（第 1 步）
+│   ├── sw2acad.py      AutoCAD COM 整理标注（第 2 步）
+│   ├── acad_common.py  AutoCAD 公共部分：COM 重试、图层/图幅、标注样式、PDF 打印配置
 │   ├── sw_part.py      SW 建模（COM 直接调用）
 │   ├── sw_std.py       标准件：从 Toolbox GB 基础零件生成指定规格（螺栓/螺母/垫圈/键/销/轴承）+ 放进装配
 │   ├── config.json     标题栏默认值（学校、班级、设计人）—— 换环境只改这里
@@ -26,18 +26,15 @@ cad-drawing/
     ├── asm_views.py + wheel_assembly.py  装配图，A3 1:2
     ├── bush_half_views.py + bush_half.py 半剖 + 局部剖，A3 1:1（含建模）
     ├── zcz/  params.py + build.py + views.py + drawing.py   复杂铸件轴承座，参数化全流程（最全，先看它）
-    ├── rot_oblique/  build.py + views.py + drawing.py       旋转剖（拼接法）+ 局部斜视图转正，A3 1:1
-    │                 build_solid / views_solid / drawing_solid  实心轮毂的旋转剖（剖面线按轴线裁）
-    ├── hanger_plate.py                   B 路线：板件，A3 1:2
-    └── bushing_section.py                B 路线：回转体全剖，A4 1:1
+    └── rot_oblique/  build.py + views.py + drawing.py       旋转剖（拼接法）+ 局部斜视图转正，A3 1:1
+                      build_solid / views_solid / drawing_solid  实心轮毂的旋转剖（剖面线按轴线裁）
 ```
 
 ## 0. 环境（2026-11-07 实测）
 
 - **AutoCAD 2024**：`C:\Program Files\Autodesk\AutoCAD 2024\acad.exe`，COM 名 `AutoCAD.Application(.24)`，有 `gbenor.shx` / `gbcbig.shx`。
 - **SolidWorks 2025**：默认 `C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SLDWORKS.exe`（装在别处设环境变量 `SW_EXE`，AutoCAD 同理 `ACAD_EXE`），COM 名 `SldWorks.Application`（rev 33）。国标模板在 `C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates\gb_*.prtdot / drwdot`。基准面名称是中文（前视基准面…）。
-- **Python 3.12** + pywin32 + pyautogui + PyMuPDF（fitz）装在**用户目录 site-packages**。**不要用 `python -I`**，否则 import 失败。
-- 屏幕 2560×1600，缩放 150%。键盘布局有中文（0804）和美式（0409），脚本会自动切到 0409。
+- **Python 3.12** + pywin32 + PyMuPDF（fitz）+ ezdxf + shapely装在**用户目录 site-packages**。**不要用 `python -I`**，否则 import 失败。
 - 写 JSON 时 Windows 下 `open(..., "w")` 默认是 GBK，要写 `encoding="utf-8"`。
 - 截屏或 numpy 报 *OpenBLAS Memory allocation failed* 时，设环境变量 `OPENBLAS_NUM_THREADS=1`。
 
@@ -45,14 +42,13 @@ cad-drawing/
 
 | 需求 | 做法 |
 |---|---|
-| 交付用的 2D 零件图（有剖视、孔系、键槽等） | **A 路线：sw_views + sw2acad**。SW 只出投影，AutoCAD 里纯 COM 整理标注。见 §2 |
-| 很简单的板件/垫片，或用户点名要"看着它一笔笔画" | **B 路线：acadkb**，AutoCAD 里模拟键盘敲命令。见 §3 |
-| 3D 零件、装配、干涉检查 | **SolidWorks MCP**（`solidworks_*` 工具，见记忆 solidworks-mcp），或 `sw_part.py`。见 §4 |
+| 2D 零件图、装配图 | **sw_views + sw2acad**。SW 只出投影，AutoCAD 里纯 COM 整理标注。见 §2 |
+| 3D 零件、装配、干涉检查 | **SolidWorks MCP**（`solidworks_*` 工具，见记忆 solidworks-mcp），或 `sw_part.py`。见 §3 |
 | SolidWorks 自动标尺寸（AutoDimension）、SW 工程图直接交 | **不用**。用户看过说"好乱"：尺寸引线跑出图框、轴测图失控、标题栏空白。SW 只用来出视图 |
 
-A 路线的好处：投影、剖切面后的可见线（孔口端面线、倒角线）、剖面线、剖切符号、中心符号都由 SW 计算，不会漏线；不受输入法和焦点干扰，用户可以照常用电脑；改尺寸只需改脚本里的一行重跑，约 1 分钟。
+这样做的好处：投影、剖切面后的可见线（孔口端面线、倒角线）、剖面线、剖切符号、中心符号都由 SW 计算，不会漏线；不受输入法和焦点干扰，用户可以照常用电脑；改尺寸只需改脚本里的一行重跑，约 1 分钟。
 
-## 2. A 路线：SW 投影 → DWG → AutoCAD 整理
+## 2. 出图：SW 投影 → DWG → AutoCAD 整理
 
 ### 2.1 找范例
 
@@ -100,7 +96,7 @@ A 路线的好处：投影、剖切面后的可见线（孔口端面线、倒角
    - **三视图怎么摆**：主视图要全剖时，先建左视图，再从左视图沿对称面剖出主视图（剖视图放在左视图左边），俯视图用 `*上视` 或 `projected` 建在主视图下方。左视图要全剖时，从主视图竖直剖、放右边（`section` 自动让箭头朝右）。SW 的 `*左视` 就是国标左视图（物体前面在右侧）。
    - **半剖** `half_section(drw, view, depth, side="right", axis=0)`：直接在原视图上做一个矩形局部剖，矩形一边压在对称线上、另三边伸出零件外，剖到对称面。不生成新视图、不出 A-A（国标：剖切面是对称面且按投影关系配置时不标注）。`depth` = 这个视图里零件**最前面**到对称面的距离（零件 Z -50..50、前视图 → 50）。`side`：对称线竖直时 `right`/`left`，水平时 `top`/`bottom`，`axis` 是对称线的视图坐标（零件关于外框中心对称时就是 0）。AutoCAD 里再 `s.to_center(p1, p2)` 把压在对称线上的细实线改成点画线。
    - **局部剖** `broken_out(drw, view, [(x,y),...], depth)`：点列是闭合边界（视图坐标），画成闭合样条，导出后是细实线 SPLINE，就是国标的波浪线，而且只画在实体范围内，边界可以伸出轮廓。`depth` 含义同上，剖到要表达的孔/槽的轴线。一个视图可以做多处，和半剖并存也行。
-   - 半剖、局部剖用的都是 SW 的 `CreateBreakOutSection(深度)`，先选中闭合草图再调。SW 自带的 L 形剖切线半剖试过不好用，见 §5.1。
+   - 半剖、局部剖用的都是 SW 的 `CreateBreakOutSection(深度)`，先选中闭合草图再调。SW 自带的 L 形剖切线半剖试过不好用，见 §4.1。
    - **局部放大图** `detail(drw, 父视图, 圆心, 半径, at, scale=(4,1), label="I")`：圆心/半径是父视图的视图坐标。SW 的标签（`SW_NOTE` 块）在 AutoCAD 里会被当模板删掉，自己用 `s._text` 写罗马数字 + 细横线 + 比例。放大图里标尺寸记得 `k=`。
    - 剖切面过对称面、视图按投影关系摆放时，国标允许不标剖切符号和 "A-A"：AutoCAD 里用 `s.erase_in(框)` 删掉。
    - 螺纹孔 SW 不出装饰螺纹线（零件是普通孔建的），在 AutoCAD 里用 `s.thread_hole(...)` / `s.thread_circle(...)` 补（大径细实线、终止线粗实线、圆视图 3/4 细圆）。
@@ -120,7 +116,7 @@ A 路线的好处：投影、剖切面后的可见线（孔口端面线、倒角
 cd /tmp && OPENBLAS_NUM_THREADS=1 PYTHONIOENCODING=utf-8 timeout 590 python 脚本.py > run.log 2>&1
 ```
 
-Bash timeout 设 600000。A 路线不需要提醒用户别碰键鼠。
+Bash timeout 设 600000。全程不碰键鼠，不用提醒用户别动电脑。
 
 ### 2.3 参数化（复杂零件推荐，范例 `examples/zcz/`）
 
@@ -174,7 +170,7 @@ Bash timeout 设 600000。A 路线不需要提醒用户别碰键鼠。
 
 ### 2.5 成套图纸：装配图 + 零件图（范例 `examples/reducer/`，2026-11-08 一级圆柱齿轮减速器）
 
-1. `build_parts.py`：零件都在**全局坐标**里建（输入轴 X=0、输出轴 X=100、结合面 Y=0、轴线沿 Z），装配时只平移/旋转不加配合。键槽：`shaft_keyway` / `hub_keyway`（草图画在过轴线的基准面上，`sw_part.cut_offset` 从槽底开始切，见 §4）。
+1. `build_parts.py`：零件都在**全局坐标**里建（输入轴 X=0、输出轴 X=100、结合面 Y=0、轴线沿 Z），装配时只平移/旋转不加配合。键槽：`shaft_keyway` / `hub_keyway`（草图画在过轴线的基准面上，`sw_part.cut_offset` 从槽底开始切，见 §3）。
 2. `build_asm.py`：`sw_std.make` 生成标准件（3 个平键、4 组 M10×40 螺栓 + 垫圈 + 螺母），`sw_std.place` 按"零件轴线 → 装配方向 + 参考点 → 装配点"放好；大齿轮绕自身轴线转 −90° 让轮毂键槽对上轴上的键（变换矩阵行向量约定）。标准件信息（代号、规格、材料、质量）写 `std.json` 给明细栏。干涉检查（MCP `solidworks_check_interference`）只剩螺栓和螺母的螺纹重叠（每组约 193 mm³ = 大径与螺母小径之间那圈，正常）。
 3. `views.py` + `reducer_gb.py`：装配图 A2 1:2。键在 A-A 里纵剖、`unhatch` 去剖面线并删 SW 在键圆头处加的中心符号；明细栏行 `std_row(...)` 从 std.json 生成（`GB/T 1096 键 12×8×32`…），总重 = 零件 + 标准件；螺栓组用 `balloon_group`；轴伸直径挪到左视图（A-A 里轴伸太窄、还有键挡着）。
 4. `零件图/输出轴*.py`：主视图 `*右视`（键槽正对观察者），两个移出断面放在剖切线延长线上（不对称：画箭头、省略字母）；直径竖直标、文字压轴线的断开点画线；轴向尺寸 `auto_dims` 自动分排；基准 A/B 在两个轴颈、三角形和直径尺寸线对齐；圆跳动指向表面。
@@ -183,36 +179,7 @@ Bash timeout 设 600000。A 路线不需要提醒用户别碰键鼠。
 
 还没做的：箱座、箱盖、齿轮轴、套筒、端盖的零件图（同样的路子）；装配图的标注坐标还是 `sx()/sy()` 手推的，没改成 `view_affine`。
 
-## 3. B 路线：AutoCAD 键盘逐笔画（acadkb）
-
-只在 §1 说的情况下用。
-
-### 3.1 步骤
-
-1. **先在纸上算坐标**：图形按 1:1 实际尺寸画，图框/字高/尺寸样式按 `S` 倍放大（出图比例 1:S）。`frame()` 返回内框：A4 是 `(25,5)–(292,205)`，A3 是 `(25,5)–(415,292)`，都要乘 S。标题栏 180×40 占内框右下角（A4 时是 x 112–292、y 5–45），视图和技术要求要避开这块。视图之间每道尺寸留 7S，第一道尺寸离轮廓约 10S。
-2. 从最接近的范例复制一份改：
-   - `examples/hanger_plate.py`：板件。主视图 + 左视图、孔距尺寸链、孔径、技术要求、标题栏，A3、1:2。
-   - `examples/bushing_section.py`：回转体**全剖**。封闭 pline 加剖面线、孔口端面线、倒角引线、非圆视图上标直径，A4、1:1。
-3. 运行：`cd /tmp && PYTHONIOENCODING=utf-8 timeout 590 python 脚本.py <输出目录>`（Bash timeout 设 600000）。**运行前告诉用户别碰键盘鼠标。**
-4. 核对：脚本最后的 `d.report()` 会列出全部尺寸和文字，逐项对一遍；再用 Read 看 `render_pdf` 生成的 PNG。
-
-### 3.2 `Drafter` 主要方法（`scripts/acadkb.py`）
-
-| 方法 | 说明 |
-|---|---|
-| `Drafter(scale=S)` → `new_document(close_paths=[旧dwg])` | 新建并配好图层（粗实线/细实线/中心线/虚线/剖面线/尺寸/文字）、HZ 字体、GB 标注样式，关 DYNMODE |
-| `frame("A3")` → 内框坐标 | 图幅 A4–A0，横放 |
-| `layer(名)`、`rect`、`line(*pts)`、`pline(*pts, close)`、`circle(c, r)`、`arc(圆心, 起点, 端点)`（逆时针）、`center_cross(c, r)`、`hatch(区域内一点)` | 画图 |
-| `dimlin(p1, p2, loc, text=None)`、`dimcont(*pts)`、`dimbase(*pts)`、`dimdia(圆上一点, loc, text)`、`dimrad` | 尺寸。loc 在两点 x 范围外就是竖直尺寸，在 y 范围外就是水平尺寸 |
-| `leader([箭头尖, 折点, 文字端], 内容)` | 带箭头引线，用于倒角 C1、序号、说明 |
-| `text(p, 图纸字高, 内容, just="MC")`（`just=None` 表示左对齐）、`tech_notes(p, [条目])`、`title_block(inner, 图名, 图号, 比例, 材料, 设计人, 日期)` | 文字（中文自动走剪贴板）。标题栏的"材料"格只放得下约 9 个字符，写牌号（ZCuSn10P1）就行，名称写进技术要求 |
-| `save_and_plot(dwg, pdf)` → 实际 pdf 路径；`report()`；`render_pdf(pdf, png)` | 收尾和核对 |
-
-每个绘图调用内部都会用 `ModelSpace.Count` 核对新增对象数，不够就 Esc + U 重做，连续 3 次失败就抛异常。每画一个对象前，`ensure()` 都会检查前台是不是 acad 进程、键盘是不是 0409，不对就自动 `focus()`。
-
-**特殊字符**：尺寸文字里 Φ 写 `%%C`，± 写 `%%P`，° 写 `%%D`，× 写 `\\U+00D7`（Python 字符串里要双反斜杠）。`text`/`leader` 的内容走剪贴板，可以直接写 "×"。gbenor 字体里 × 长得像字母 X，这是字体本身的样子，不是错误。
-
-## 4. SolidWorks 建模（`scripts/sw_part.py`；优先用 SolidWorks MCP）
+## 3. SolidWorks 建模（`scripts/sw_part.py`；优先用 SolidWorks MCP）
 
 ```python
 import sys, os; sys.path.insert(0, os.path.expanduser(r"~\.claude\skills\cad-drawing\scripts"))
@@ -242,9 +209,9 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 
 `place`：零件自身轴线（螺栓/键/销/轴承 +X，螺母/垫圈 +Z）转到 axis，零件上的参考点 ref 放到 origin，`up` 定第二个方向（零件 +Y 转去哪：螺栓头对边、键宽）。各标准件生成后的自身坐标约定写在 sw_std.py 的 `LOCAL`/`AXIS` 注释里。零件要先在 SW 里打开才能插入。
 
-## 5. 踩过的坑
+## 4. 踩过的坑
 
-### 5.1 SW 出视图与导出（A 路线）
+### 4.1 SW 出视图与导出
 
 | 症状 | 原因 / 解决 |
 |---|---|
@@ -274,7 +241,7 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 | 局部放大图的剖面线在 AutoCAD 里变成点画线 | 放大图的剖面线导出为块 `SW_HATCH_n`，老的 `_relayer` 把所有块都当中心符号炸开放中心线层。已改为只有 `*CENTERMARK*` 块进中心线层，其余块炸开后按类型分层 |
 | 图框左右两边外面有 A B C D 字母 | SW 模板的分区字母像视图标注，被 `_relayer` 留下来了。`frame()` 现在会删掉内框外的文字 |
 
-### 5.2 AutoCAD COM 整理（A 路线）
+### 4.2 AutoCAD COM 整理
 
 | 症状 | 原因 / 解决 |
 |---|---|
@@ -304,9 +271,9 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 | `check()` 报 *Null extents* 崩掉 | 明细栏空格写了空字符串，没有外框。已跳过 |
 | `AddDimRotated(…, 90°)` 建的竖直尺寸，`Rotation` 读回来是 0 | 实测如此。要判断尺寸方向用 `dimlin` 记在 `self._dims` 里的角度（`break_center_under_text` 已这样做） |
 | 配合尺寸文字挪到轴线旁边（改 TextPosition）后，尺寸线拖出一长截，字压到轴承上 | 窄的轴段上别挪字：字留在中间，用 `break_center_under_text` 把点画线断开（国标做法） |
-| 旧时间戳 PDF 越积越多、删不掉 | 原因是 AutoCAD 打印完自动用 WPS 打开、锁住文件。现在用 `DWG To PDF NoView.pc3`（`acadkb.ensure_pdf_pc3()` 复制 DWG To PDF.pc3、只把 View_New_File 改成 FALSE、按 adler32 重写文件头），打印完不再打开；`Sheet` 退出时删掉同名的旧时间戳 PDF（留最新的出图和校核图）。新生成的 pc3 要先 `RefreshPlotDeviceInfo` 再设，否则 Invalid input |
+| 旧时间戳 PDF 越积越多、删不掉 | 原因是 AutoCAD 打印完自动用 WPS 打开、锁住文件。现在用 `DWG To PDF NoView.pc3`（`acad_common.ensure_pdf_pc3()` 复制 DWG To PDF.pc3、只把 View_New_File 改成 FALSE、按 adler32 重写文件头），打印完不再打开；`Sheet` 退出时删掉同名的旧时间戳 PDF（留最新的出图和校核图）。新生成的 pc3 要先 `RefreshPlotDeviceInfo` 再设，否则 Invalid input |
 
-### 5.3 SolidWorks 建模 / 装配 / MCP
+### 4.3 SolidWorks 建模 / 装配 / MCP
 
 | 症状 | 原因 / 解决 |
 |---|---|
@@ -328,27 +295,7 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 | 斜视图上做局部剖：`CreateBreakOutSection` 返回成功，可视图里什么都没变 | 实测（整个视图框都圈上也一样）。斜视图上别用局部剖；要"半边剖开"就做全剖再 `clip_hatch` |
 | 装配干涉检查报螺栓和螺母各重叠约 193 mm³ | 螺栓按大径建、螺母按小径建，旋合段的那一圈。正常，不用改 |
 
-### 5.4 键盘逐笔画（B 路线）
-
-| 症状 | 原因 / 解决 |
-|---|---|
-| `Documents.Add` 报 *Method not available in SDI mode* | SDI=1；`new_document` 已自动设成 0 |
-| 敲 `ZOOM W` 或第二点时报 *Invalid window specification*，图形位置错乱 | 动态输入（DYNMODE）开着，坐标被当成相对坐标；COM 设 DYNMODE 会报错，只能键盘敲 `DYNMODE 0` |
-| `Select arc or circle:` 一直报 *Invalid selection*，后面所有命令错位 | 点选对象时目标必须在屏幕上可见；画完图框立刻 `zoom_extents()`。对象加在视野外时要重新缩放 |
-| 文字内容变成 "TEXT"、"90"，或标题丢失 | 敲得太快，上一条命令还没结束；TEXT 结束需要两次回车，并留足等待时间。库里的 checked() 会自动发现并重做 |
-| COM 报 *被呼叫方拒绝接收呼叫*，或对象变成 `<unknown>.Xxx` | AutoCAD 忙（命令执行中、文档刚开关、刚 SaveAs）。用 `acadkb.retry(lambda: ...)` 包起来，或用 `var()`/`count()`。本机 pywin32 没有 CoRegisterMessageFilter，没法全局处理 |
-| `L.color = c` 报 *can not be set* | 晚绑定问题；用 `AcCmColor.24` 设 TrueColor |
-| COM 冷启动 AutoCAD 报 *服务器运行失败* | 直接 `os.startfile(acad.exe)` 再轮询 GetActiveObject（`_connect` 已处理） |
-| SaveAs 后 `doc.ActiveLayout` 报 `<unknown>` | 重新取 ActiveDocument（已处理） |
-| PDF 没更新 | 旧 PDF 被阅读器占用时 PlotToFile 静默失败；`save_and_plot` 会改名另存并打印新路径 |
-| 每次出完 PDF 都改名另存（带时间戳） | 打印后 PDF 会自动在 WPS 里打开并被锁住。重跑前先在 WPS 里关掉它，或者接受改名 |
-| 命令行出现 "EADER了，00"、*Unknown command* | 搜狗输入法自己切回了中文，吞掉了字母。只在开头切一次不够；`focus()` 每次都发 WM_INPUTLANGCHANGEREQUEST 并读回 GetKeyboardLayout 核对。中文一律走剪贴板 Ctrl+V（命令行和在位编辑器都可以）。临时测试脚本也必须先 `d.focus()` |
-| `ensure()` 频繁"重新 focus" | 命令行/在位编辑器是 acad 的 WPF 子窗口，句柄和主窗口不同；已改成按进程 id 判断 |
-| `SetForegroundWindow` 报错 | 先按一下 Alt 再调用（`focus()` 已处理） |
-| 技术要求居中跑到图框外 | TEXT 不带 J 时沿用上一次的对齐方式；`text()` 已改成总是显式给 J（None→L） |
-| 卡住时不知道停在哪 | 按 F2 打开命令历史并截屏（pyautogui.screenshot），读最后几行提示 |
-
-## 6. 画法规范（国标要点）
+## 5. 画法规范（国标要点）
 
 - **第一角画法**：俯视图在主视图下方，左视图在主视图右侧。
 - 孔要画十字中心线（超出圆约 5）；看不见的轮廓用虚线层；剖视图用 ANSI31 剖面线。

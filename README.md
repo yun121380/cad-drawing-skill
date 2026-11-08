@@ -41,7 +41,7 @@
 ## 环境要求
 
 - Windows，SolidWorks 2025（带 Toolbox、GB 模板），AutoCAD 2024（带 `gbenor.shx` / `gbcbig.shx`）。
-- Python 3.12：`pywin32`、`PyMuPDF`、`ezdxf`、`shapely`、`numpy`、`Pillow`（B 路线另需 `pyautogui`）。
+- Python 3.12：`pywin32`、`PyMuPDF`、`ezdxf`、`shapely`、`numpy`、`Pillow`。
 - 软件装在非默认位置时，设环境变量 `SW_EXE`、`ACAD_EXE`。
 - 标题栏里的学校、班级、设计人改 `scripts/config.json`。
 
@@ -65,7 +65,7 @@ scripts/
   sw2acad.py        AutoCAD 整理标注（Sheet 类）+ 自动检查
   sw_part.py        SolidWorks 建模小工具
   sw_std.py         国标标准件生成与放置
-  acadkb.py         备用路线：模拟键盘在 AutoCAD 里逐笔画
+  acad_common.py    AutoCAD 公共部分：COM 重试、图层/图幅、标注样式、PDF 打印配置
   com_filter.py     COM 忙时自动重试
   config.json       标题栏默认值
 examples/           各类图的完整脚本（减速器成套图、轴承座、旋转剖、半剖……）
