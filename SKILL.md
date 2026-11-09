@@ -5,6 +5,8 @@ description: 出国标二维工程图（零件图/剖视/尺寸/粗糙度/形位
 
 # 国标工程图：SolidWorks 投影 + AutoCAD 整理
 
+> 许可：CC BY-NC-SA 4.0，**禁止商业化使用**。作者 yun121380，https://github.com/yun121380/cad-drawing-skill
+
 目录 `$K` = 本 skill 的安装目录（如 `%USERPROFILE%\.claude\skills\cad-drawing`，bash 里写 `~/.claude/skills/cad-drawing`）。范例脚本按相对路径找 `scripts/`，模型和输出放在脚本旁边的 `models/`、`out/`（没有就先建）。
 
 ```
