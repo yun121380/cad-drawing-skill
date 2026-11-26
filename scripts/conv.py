@@ -279,14 +279,14 @@ def worm_wheel_section(s, c_wheel, u, a, d1, m, b2, de2, sides=(1, -1), k=1.0, r
         if root:
             s.layer("粗实线"); s.ms.AddArc(_P(*ow), rf * k, base - tf, base + tf)
         for sg in (1, -1):
-            p = on(rt, sg * tt)
+            p = on(rt, sg * sd * tt)                                         # 上下两侧 base 方向相反，角度要乘 sd
             tax = (p[0] - c_wheel[0]) * ux + (p[1] - c_wheel[1]) * uy          # 该点的轴向坐标（图纸 mm）
             q = _pt(c_wheel, ux, uy, nx, ny, tax, sd * de2 / 2 * k)
             if math.dist(p, q) > 0.05:
                 s.line(p, q, "粗实线")
             e = _pt(c_wheel, ux, uy, nx, ny, sg * half * k, sd * de2 / 2 * k)
             s.line(q, e, "粗实线")                                            # 外圆
-            s.line(e, on(rf, sg * tf), "粗实线")                              # 端面到齿根圆弧
+            s.line(e, on(rf, sg * sd * tf), "粗实线")                         # 端面到齿根圆弧
         s.line((ow[0] - 3 * ux, ow[1] - 3 * uy), (ow[0] + 3 * ux, ow[1] + 3 * uy), "中心线")   # 蜗杆轴线位置
         s.line((ow[0] - 3 * nx, ow[1] - 3 * ny), (ow[0] + 3 * nx, ow[1] + 3 * ny), "中心线")
 
