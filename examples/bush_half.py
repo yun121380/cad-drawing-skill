@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from sw2acad import Sheet, P
 
-D = os.path.dirname(os.path.abspath(__file__)), "out"
+D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 VIEWS = [(61, 144, 179, 256), (61, 26, 179, 144)]
 with Sheet(D + r"\bush_half_sw.DWG", D + r"\bush_half_gb.dwg", views=VIEWS) as s:
     s.frame()

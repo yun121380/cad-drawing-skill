@@ -6,7 +6,7 @@
 import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from sw2acad import Sheet, P
 
-D = os.path.dirname(os.path.abspath(__file__)), "out"
+D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 VIEWS = [(60, 150, 180, 250), (200, 150, 345, 250)]
 with Sheet(D + r"\asm_sw.DWG", D + r"\asm_gb.dwg", views=VIEWS, view_scale=2) as s:
     s.frame()
@@ -18,6 +18,7 @@ with Sheet(D + r"\asm_sw.DWG", D + r"\asm_gb.dwg", views=VIEWS, view_scale=2) as
            ("SL-02-05", "驱动轮轮毂", 1, "45", "1.60", "调质")], origin=top)
     s.move_label("A-A", (120, 257))                # 剖视名称挪到序号上方
     s.unhatch((130, 200))                          # 轴是实心件，纵剖不画剖面线
+    print("剖面线错开:", s.stagger_hatches(same=[((98, 213), (109.6, 227.7), (109.6, 172.4))]))  # 相邻零件剖面线错开（GB/T 4457.5）；轮毂法兰被孔切开的两小块指定为同一零件
     s.line((80, 200), (160, 200))                  # 主视图轴线
     s.line((270, 160), (270, 240)); s.line((210, 200), (330, 200))   # 端视图中心线
     # 零件序号：一排水平对齐

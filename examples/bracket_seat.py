@@ -5,7 +5,7 @@
 import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from sw2acad import Sheet, P
 
-D = os.path.dirname(os.path.abspath(__file__)), "out"
+D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 VIEWS = [(55, 140, 225, 232), (230, 115, 350, 250), (55, 25, 225, 140)]
 with Sheet(D + r"\bracket_sw.DWG", D + r"\bracket_gb.dwg", views=VIEWS) as s:
     s.frame()
