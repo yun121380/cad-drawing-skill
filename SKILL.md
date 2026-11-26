@@ -17,11 +17,22 @@ cad-drawing/
 │   ├── sw2acad.py      AutoCAD COM 整理标注（第 2 步）
 │   ├── acad_common.py  AutoCAD 公共部分：COM 重试、图层/图幅、标注样式、PDF 打印配置
 │   ├── sw_part.py      SW 建模（COM 直接调用）
-│   ├── sw_std.py       标准件：从 Toolbox GB 基础零件生成指定规格（螺栓/螺母/垫圈/键/销/轴承）+ 放进装配
-│   ├── config.json     标题栏默认值（学校、班级、设计人）—— 换环境只改这里
+│   ├── sw_std.py       标准件：Toolbox GB 基础零件生成指定规格 + 放进装配（§3.1）
+│   ├── toolbox_db.py   直接读 Toolbox 尺寸库 swbrowser.sldedb（SQLite），sw_std.make_any 用它生成任意 GB 件
+│   ├── gbtol.py        GB/T 1800 公差查表（k6/H7/N9… → 极限偏差）、GB/T 1095 键槽、GB/T 1804 一般公差（§2.6）
+│   ├── gb_hatch.py     装配图剖面线（GB/T 4457.5）：相邻零件错开、按材料换剖面符号、找窄剖面（挂在 Sheet 上，§2.4）
+│   ├── conv.py         规定画法：外螺纹、花键、弹簧、锥齿轮、蜗杆蜗轮（挂在 Sheet 上，§2.4）
+│   ├── placer.py       粗糙度/形位公差/基准/零件序号自动放置（挂在 Sheet 上，§2.7）
+│   ├── audit.py        尺寸完整性审查：拿模型特征核对“标全没有、有没有封闭链”（§2.8）
+│   ├── sw_mem.py       SolidWorks 内存守护：超过上限自动退出重开（§4.3）
+│   ├── env_check.py    换电脑/重装后先跑：逐项检查软件路径、模板、Toolbox、字体、Python 包
+│   ├── config.json     标题栏默认值 + 软件路径 + SW 内存上限 —— 换环境只改这里
 │   └── com_filter.py   COM 消息过滤器（忙时自动重试）
 └── examples/
-    ├── reducer/  build_parts → build_asm → views → reducer_gb；零件图/ 输出轴、大齿轮   成套图纸（§2.5）
+    ├── reducer/  build_parts → build_asm → views → reducer_gb（装配图，模型坐标 + 自动序号）；
+    │             零件图/ 输出轴、输出轴_auto（自动放符号 + 审查）、大齿轮、箱座、箱盖   成套图纸（§2.5）
+    ├── conv_demo.py                      规定画法样张（外螺纹、花键、弹簧、锥齿轮、蜗杆蜗轮），空白图上画
+    ├── std_demo.py                       新标准件生成测试（螺钉、弹簧垫圈、圆锥滚子轴承、O 形圈、毡圈）
     ├── hub_flange.py                     回转体，A3 1:1，单文件
     ├── plate_views.py + side_plate.py    板件，A3 1:2
     ├── bracket_views.py + bracket_seat.py 铸件支架，A3 1:1
@@ -34,8 +45,13 @@ cad-drawing/
 
 ## 0. 环境（2026-11-07 实测）
 
+**换电脑 / 重装软件后先跑 `python $K/scripts/env_check.py`**：逐项查 AutoCAD、SW、国标模板、Toolbox 基础零件、gbenor 字体、
+PDF 打印机、Python 包、公差表自测，缺什么打印改 config.json 的哪一项（`acad_exe` / `sw_exe` / `sw_templates` / `toolbox_gb`）。
+脚本里不再写死路径，都从 config.json 读。**这套流程只在作者的一台电脑上实测过**——别的版本（AutoCAD 2018~2023、SW 2022~2024）
+COM 接口大体相同但没验证，第一次用先跑 env_check 和 examples/conv_demo.py。
+
 - **AutoCAD 2024**：`C:\Program Files\Autodesk\AutoCAD 2024\acad.exe`，COM 名 `AutoCAD.Application(.24)`，有 `gbenor.shx` / `gbcbig.shx`。
-- **SolidWorks 2025**：默认 `C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SLDWORKS.exe`（装在别处设环境变量 `SW_EXE`，AutoCAD 同理 `ACAD_EXE`），COM 名 `SldWorks.Application`（rev 33）。国标模板在 `C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates\gb_*.prtdot / drwdot`。基准面名称是中文（前视基准面…）。
+- **SolidWorks 2025**：`C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SLDWORKS.exe`（装在别处改 config.json），COM 名 `SldWorks.Application`（rev 33）。国标模板在 `C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates\gb_*.prtdot / drwdot`。基准面名称是中文（前视基准面…）。
 - **Python 3.12** + pywin32 + PyMuPDF（fitz）+ ezdxf + shapely装在**用户目录 site-packages**。**不要用 `python -I`**，否则 import 失败。
 - 写 JSON 时 Windows 下 `open(..., "w")` 默认是 GBK，要写 `encoding="utf-8"`。
 - 截屏或 numpy 报 *OpenBLAS Memory allocation failed* 时，设环境变量 `OPENBLAS_NUM_THREADS=1`。
@@ -45,7 +61,7 @@ cad-drawing/
 | 需求 | 做法 |
 |---|---|
 | 2D 零件图、装配图 | **sw_views + sw2acad**。SW 只出投影，AutoCAD 里纯 COM 整理标注。见 §2 |
-| 3D 零件、装配、干涉检查 | **SolidWorks MCP**（`solidworks_*` 工具，见记忆 solidworks-mcp），或 `sw_part.py`。见 §3 |
+| 3D 零件、装配、干涉检查 | **SolidWorks MCP**（`solidworks_*` 工具，需另装），或 `sw_part.py`。见 §3 |
 | SolidWorks 自动标尺寸（AutoDimension）、SW 工程图直接交 | **不用**。用户看过说"好乱"：尺寸引线跑出图框、轴测图失控、标题栏空白。SW 只用来出视图 |
 
 这样做的好处：投影、剖切面后的可见线（孔口端面线、倒角线）、剖面线、剖切符号、中心符号都由 SW 计算，不会漏线；不受输入法和焦点干扰，用户可以照常用电脑；改尺寸只需改脚本里的一行重跑，约 1 分钟。
@@ -111,6 +127,9 @@ cad-drawing/
    - 把打印出的尺寸实测值和设计值逐个对一遍。
    - 用 fitz 把 PDF 渲染成 PNG：先看全图，再放大到每个视图（`clip=fitz.Rect(x0*s, (297-y1)*s, x1*s, (297-y0)*s)`，`s=72/25.4`）。
    - **先跑 `s.check()`**（放在 `with` 块最后）：自动找出"文字被线/剖面线穿过""几段文字挤在一起"，报坐标，按报告挪 `TextPosition`，直到 0 处。它查不了的再用眼睛看：引线有没有连上；尺寸界线有没有穿过孔；符号尖端是不是落在轮廓线上；尺寸之间是不是太挤（没重叠就不报）。用了参数化 + check 后一般 1~2 轮。
+   - **新图的标准写法**（2026-11-08 起）：标注点全用模型坐标（`mapper(view_affine)`）；粗糙度/形位公差/基准/序号用 `auto_*`（§2.7）；
+     偏差用 `s.fit`（§2.6）；`with` 块末尾依次 `break_center_under_text()` → `audit_dims(...)`（§2.8）→ `check()`，两个都 0 处再看渲染图。
+     照抄 `examples/reducer/零件图/输出轴_auto.py`（回转体）或 `箱盖.py`（铸件）。
 
 运行：
 
@@ -139,6 +158,9 @@ Bash timeout 设 600000。全程不碰键鼠，不用提醒用户别动电脑。
 | `bom([(代号, 名称, 数量, 材料, 重量, 备注), ...], origin)` | 明细栏，接在标题栏上方，序号自下而上 1、2、3…，列宽按 GB/T 10609.2 |
 | `balloon(零件上一点, 文字位置, n)` | 零件序号：小黑点、细引线、水平短线上写数字。同一视图的序号要排成一排 |
 | `unhatch(零件内一点)` | 删掉该零件的剖面线（装配图里轴、键、销、螺栓纵剖时不画剖面线） |
+| `hatch_material(零件内一点, material="非金属", scale=1)` | **按材料换剖面符号**（GB/T 4457.5，2026-11-10）：`"金属"` ANSI31、`"非金属"` 交叉网格 ANSI37（橡胶、塑料、尼龙…）、`"涂黑"` SOLID，也可以直接给 AutoCAD 图案名。间距 = 原来的 × scale：图上只有两三毫米宽的窄条给 0.5，不然网格太疏看着像斜线。和 `unhatch` 一样取包含该点的最小一块 |
+| `stagger_hatches(details=(), tol=1, same=(), axes=(), sw=None)` | **装配图相邻零件剖面线错开**（GB/T 4457.5，2026-11-10）：SW 导出的剖视里所有零件都是同角度、同间距的 ANSI31，相邻零件分不清。按同名 DXF 算出每块剖面区域，同一零件的几块并成一组：互为镜像的自动认；绕对称轴 `axes=[("x", 竖直轴的 x) 或 ("y", 水平轴的 y)]` 翻过去落在另一块里的；`same=[(点, 点…), …]` 指定的（轴承内外圈、被螺孔切成两块的端盖、两个视图剖到不同部位的同一零件）。区域间距 ≤ tol（图纸 mm）的组算相邻，在 45°/135° × 三种间距（1、0.55、1.6 倍）里取邻居都没用的第一种，所以多数零件还是 SW 原来的 45°。`details=[(c_parent, k, c_det, r_det)]` 是局部放大图（参数同 `SwDxf.detail_hatch_lines`）：放大图里 SW 画的剖面线是线段，换了样式的零件删掉重画，和父视图一致。只改 ANSI31，所以放在 `unhatch`、`hatch_material` 之后。返回 (各样式块数, 放大图删的线段数, 重画的线段数) |
+| `narrow_hatches(w=2)` | 图上宽度 ≤ w 的 ANSI31 剖面（向内缩 w/2 就没了的），返回 [(区域内一点, 估算宽度)]。国标只是“允许”涂黑（相邻两块涂黑之间留 ≥0.7 mm），斜线看得清就不必改；要涂黑再 `hatch_material(点, "涂黑")` |
 | `move_label("A-A", (x, y))` | 挪动 SW 的视图名，避免和尺寸重叠 |
 | `dimlin(p1, p2, loc, ang=0, txt="", k=None)` | 线性尺寸。ang=0 水平、90 竖直。txt 覆盖文字：Φ 写 `%%C`，公差带直接写进去（`%%C30H7`），可以写 `4×100(=400)`；极限偏差叠写 `%%C52H7({\\H0.7x;\\S+0.030^0;})`。**局部放大图里标尺寸传 `k=1/放大倍数`**（4:1 → 0.25），数值才对。半剖里只画一半的对称尺寸：`d.DimLine1Suppress = d.ExtLine1Suppress = True` |
 | `dimdia(c, r, ang, leader, txt)` / `dimrad(…)` | 直径、半径。ang 是引线方向；返回的对象可以改 `.TextPosition = P(x, y)` |
@@ -164,11 +186,30 @@ Bash timeout 设 600000。全程不碰键鼠，不用提醒用户别动电脑。
 | `balloon_group(零件上一点, at, [n1, n2, n3])` | 紧固件组公共指引线序号（螺母、垫圈、螺栓自下而上竖排） |
 | `table(右上角, 列宽, 行)` | 通用表格：齿轮参数表（右上角）等。格里只能放普通文字（TEXT 不支持叠写偏差，写成 `50.07(-0.10/-0.16)`） |
 | `gear_teeth(p0, u, 齿宽, ra, r, rf, sides, hidden)` / `gear_circles(c, ra, r, rf=None)` | **圆柱齿轮规定画法**（GB/T 4459.2）：非圆视图（剖开时轮齿按不剖）齿顶线、齿根线粗实线，分度线点画线伸出端面 3；`hidden` 那一侧齿顶线画虚线（啮合区）。圆视图齿顶圆粗、分度圆点画线。齿轮模型只建到齿根圆，SW 的剖面线天然停在齿根；模型外圆在圆视图里是粗实线，要改成细实线（齿根圆）——见 `大齿轮.py` |
+| `gear_side(p0, u, 齿宽, ra, r, sides=(1,-1), mesh=(), model_r=None, k=1, ext=3)` | **装配图里不剖的齿轮**（非圆外形视图，2026-11-10）：装配模型里齿轮按**分度圆柱**建（两轮正好相切，干涉检查干净），SW 投出来的是分度圆柱的两条轮廓线。这里删掉 ±model_r·k 处、齿宽范围内的那两条线，改画齿顶线（粗实线）+ 分度线（点画线，两端伸出 ext；端面外紧挨着别的零件时停在第一条横穿它的粗实线前 0.3），端面线补到齿顶线；后面零件的线 SW 截在分度圆柱轮廓上，改截到齿顶线；`mesh` 里的那一侧是啮合区：不画齿顶线，分度线画粗实线（两轮各调一次，重合处只留一根）。p0 = 齿宽起始端面的中心（图纸坐标），u = 沿齿宽方向的单位向量，side = 1 是 u 逆时针转 90° 那一侧；齿宽、ra、r、model_r 是模型 mm，k = 1/视图比例 |
+| `gear_arc(c, ra, r, model_r, k=1)` | 上面那种齿轮的**圆视图**（只露出一段也行）：找圆心 c、半径 model_r·k 的圆或圆弧，model_r = r 时改成点画线（分度圆），否则删掉；补齿顶圆（粗实线）。圆弧被别的零件挡住时，齿顶圆弧的端点沿挡住它的那条粗实线延伸到齿顶圆上；后面零件的线 SW 截在分度圆上，改截到齿顶圆 |
 | `title({占位符: 值})` | 只在 `own_frame=False`（沿用 SW 模板图框）时用 |
 | `notes([条目], p=(40,80))` | 技术要求 |
 | `s.layer(名)`、`s.ms` | 直接用 AutoCAD COM 加别的东西，比如"其余"两个字 |
 
 `half_dia(..., frac=0.55)`：字中点离圆心 frac×r，同心圆多时调它让字落在两圆之间；文字是普通 TEXT，写不了叠写偏差。
+**frac 取负**（如 −1.25，同时 `over = r·1.25 + 11`）：字写到圆心另一侧的延长线上——箱座/箱盖的半圆轴承孔这样把 Φ62H7 挪到结合面外的空白处。
+
+**2026-11-08 新增方法**（`conv.py` / `placer.py` / `audit.py`，import sw2acad 时自动挂到 Sheet 上；k = 视图比例，1:2 传 0.5）：
+
+| 方法 | 说明 |
+|---|---|
+| `fit("%%C35k6")` / `fit("12N9", code=False)` | 查 GB/T 1800 表生成带叠写偏差的文字，**不再手写偏差**（§2.6） |
+| `thread_shaft(p0, u, 长, d, P=None, sides, k)` / `thread_shaft_circle(c, d, k=)` | **外螺纹**（GB/T 4459.1）：非圆视图小径细实线 + 终止线粗实线；圆视图 3/4 小径细圆、自动删倒角圆。模型按大径建光轴 |
+| `spline_shaft(p0, u, 长, D, d, sides, k)` / `spline_circle(c, D, d, N, B, k)` / `conv.spline_mark(N,d,D,B)` | **矩形花键**（GB/T 4459.3）：小径细实线、终止线细实线、30° 尾线；圆视图画全部齿形（删光轴整圆）；标记 `6×23f7×26a11×6d10 GB/T 1144-2001` |
+| `spring(p0, u, H0, D2, d, n, n2=2, k, keep=2)` | **圆柱螺旋压缩弹簧**剖视规定画法（GB/T 4459.4）：簧丝断面（≥2 mm 画剖面线，否则涂黑）、后半圈公切线、端面磨平、n>4 时中间用簧丝中心点画线省略。不建模 |
+| `bevel_teeth(apex, u, δ, R, b, m, sides, k)` / `bevel_circles(c, d, da, R, b, k)` | **直齿锥齿轮**：齿顶线/齿根线收敛于锥顶、背锥线、分度线；圆视图大小端齿顶圆 + 大端分度圆。毛坯建到齿根锥 |
+| `worm_teeth(p0, u, 长, d1, m, sides, k)` / `worm_circles(c, d1, m)` | **蜗杆**：齿顶线粗、分度线点画线、齿根线可省 |
+| `worm_wheel_section(c, u, a, d1, m, b2, de2, sides, k, root=False)` / `worm_wheel_circles(c, d2, de2)` | **蜗轮**过轴线剖视：以蜗杆轴线为圆心的喉部齿顶圆弧（到外圆 de2 为止）、分度圆弧、端面线；模型建到齿根喉圆 |
+| `auto_rough(表面线段, ra, out=法向)` | 粗糙度**自动放置**（§2.7） |
+| `auto_gtol(sym, 值, 基准, 箭头点, out=)` / `auto_datum(foot, "A", out=, slide=)` | 形位公差框格 / 基准符号自动放置 |
+| `auto_balloons([(零件上一点, 序号), ...], box=视图框, sides=)` | 装配图序号自动排：按指引线穿过东西最少分到四周，排成一排、交叉就换位 |
+| `audit_dims(features, [(仿射, 视图框), ...], ignore_r=)` | **尺寸完整性审查**（§2.8） |
 
 ### 2.5 成套图纸：装配图 + 零件图（范例 `examples/reducer/`，2026-11-08 一级圆柱齿轮减速器）
 
@@ -179,7 +220,59 @@ Bash timeout 设 600000。全程不碰键鼠，不用提醒用户别动电脑。
 5. `零件图/大齿轮*.py`：主视图 = 过轴线全剖（对称面、按投影关系配置，剖切符号和 A-A 都不标）+ 圆视图；`gear_teeth` / `gear_circles`；左边一排直径 `auto_dims`；孔 Φ40H7 有键槽只能 `half_dia`、基准 A 三角形和它对齐；键槽宽 12JS9、槽深 43.3；参数表 `table`。
 6. 每张图 `check()` 0 处再交。改零件尺寸时：`build_parts → build_asm → views + 各零件 *_views → 各 drawing`。
 
-还没做的：箱座、箱盖、齿轮轴、套筒、端盖的零件图（同样的路子）；装配图的标注坐标还是 `sx()/sy()` 手推的，没改成 `view_affine`。
+7. **装配图已改成模型坐标**（2026-11-08）：`views.py` 写 `reducer_layout.json`（三个视图的 `view_affine`），`reducer_gb.py` 里
+   所有点写 `T(X, Y, Z)`（A-A）、`F(...)`（主视图）、`LV(...)`（左视图），序号 `auto_balloons` 自动排。改版时发现老脚本里左视图
+   公式 `x = 343.75 − Z/2` 的方向是反的（SW 实际是 `346.25 + Z/2`）——手推坐标就是会出这种错。
+8. **箱座、箱盖零件图**（`零件图/箱座*.py`、`箱盖*.py`，A2 1:2）：主视图（局部剖螺栓孔/地脚孔；箱盖开虚线表达内腔）+ 俯视图 +
+   A-A（过输出轴承孔轴线，放左视图位置）。对称于 X=75 的长度尺寸都在俯视图下方 `auto_dims`；半圆轴承孔 `half_dia(frac<0)`；
+   粗糙度、平面度 `auto_*`；`audit_dims` 0 处（箱盖第一版漏了凸缘到轴线的 68，就是 audit 报出来的）。
+   开虚线注意：`hidden_lines(front, True)` 后**投影视图和剖视也跟着显示虚线**（实测），要对它们再 `hidden_lines(v, False)`。
+
+还没做的：齿轮轴、套筒、四个端盖的零件图（同样的路子，照 输出轴_auto.py / 箱盖.py 抄）。
+
+### 2.6 公差查表（`scripts/gbtol.py`，2026-11-08）
+
+偏差值不要再手写：`s.dimlin(..., txt=s.fit("%%C35k6"))` → `%%C35k6(+0.018/+0.002 叠写)`。范围 0~500 mm，轴 a~u（含 cd ef fg js j k），
+孔同字母大写（J 只有 6/7/8 级），K/M/N/P~U 孔的 Δ 修正都在。`python gbtol.py` 自测 40 个手册值全对。
+- `gbtol.limits("H7", 62)` → `(0.030, 0.0)`；`tol_text("12N9", code=False)`；`tol_text("%%C40js6")` → `±0.008`（新标准 ±IT/2，JS9 b=12 是 ±0.0215）
+- `gbtol.keyway(40)` → GB/T 1095 键槽：b=12、t1=5、t2=3.3，轴上标 `depth_text(kw["shaft_depth"])` = 35(0/−0.2)，毂上 43.3(+0.2/0)
+- `gbtol.general("m", 120)` → GB/T 1804 一般公差 ±0.3
+- **`check()` 里自动核对**：图上所有“代号 + 手写偏差”的尺寸（`%%C35k6({\H0.7x;\S+0.018^+0.002;})`、`(%%P0.008)`）都按表验一遍，
+  对不上报“公差：k6 Φ35 应为 +0.018/+0.002，图上写了 …”。`H7/r6` 这种配合代号不查。
+
+### 2.7 符号自动放置（`scripts/placer.py`，2026-11-08）
+
+只给“标在哪个要素上”，位置自动挑——不用再算坐标、看 2~4 轮渲染图：
+```python
+s.auto_rough((M(-50, 17.5), M(-18, 17.5)), "0.8", out=(0, 1))   # 表面 = 视图里那条轮廓线（两端点），out = 指向材料外
+s.auto_gtol("h", "0.015", "A-B", M(16, 20), out=(0, 1))         # 箭头落点 + 箭头来的方向（垂直于表面）
+s.auto_datum(M(42, 17.5), "A", out=(0, 1))                      # 标轴线的基准别给 slide（要和尺寸线对齐）
+s.auto_balloons([(T(-85, 0, 17.5), 1), ...], box=视图框, sides=("left", "top", "right", "bottom"))
+```
+做法：从当前图收集障碍（文字、尺寸数字、尺寸线、已放符号 = 硬障碍；轮廓线、剖面线区域（从 DXF 取真实边界）、中心线 = 软障碍），
+shapely STRtree；每个符号枚举几十个候选——粗糙度：直接标在线上 / 标在延长线上 / 指引线引出（各种长度、±30°、左右）；
+形位公差：折点距离 8~40、框格左右；序号：每个零件先按“指引线穿过的东西最少”分到一侧，整排离视图 −30（排在外框里的空白处）~ +70 都试，
+相邻指引线交叉就交换。按“压字 ≫ 压剖面线 > 压轮廓线 > 离要素远”打分取最低。**GB/T 131 读向**：只有朝上、朝左的面能直接标，
+朝下/朝右只能引出——候选里已保证。每个符号打印代价，≥100 带“← 看一眼”。
+
+实测：输出轴（基准 2、跳动 2、粗糙度 4）、箱座、箱盖第一次就 `check()` 0 处；减速器装配图 18 个序号 3 轮调参后 0 处。
+**仍然要看渲染图**：算法只知道“别压东西”，不懂“这个符号放这儿习不习惯”（比如序号排在视图外框里面的空白处、半径尺寸挤在一起）。
+
+### 2.8 尺寸完整性审查（`scripts/audit.py` + `sw_views.part_features`，2026-11-08）
+
+`check()` 只查排版。`audit_dims` 拿模型核对“尺寸标全了没有”：
+1. views 步骤：`V.part_features(sw, 零件, "xx_features.json")` 读零件的平面（垂直 X/Y/Z 的位置）和圆柱面（轴线、半径；R≤3 且不满半圈的当圆角跳过）；
+2. AutoCAD 步骤最后：`s.audit_dims(FEAT, [(L["front"], 视图框), ...], ignore_r=[齿根圆半径])`。
+
+每个线性尺寸两端按视图仿射换回模型坐标，按 X/Y/Z 各建一张图：节点 = 平面、孔/轴轴线、圆柱两条轮廓线；边 = 尺寸（对称尺寸还连到中点，
+齿宽 40、腹板 12 这种对称于中面的靠它连通）、圆柱轮廓 ↔ 轴线（隐含）；分布圆上的孔按“孔心到某轴线距离 = 图上某 Φ/2”算已定位。报告：
+- `Z 向缺定位尺寸：Z=-50, -18, 20 … 这一组和其余要素之间没有尺寸连起来` —— 实测去掉输出轴一个 13 就报这一条；
+- `可能是封闭尺寸链` —— 一个尺寸两端已经被别的尺寸连通（直径尺寸、重复的同一对点不算）；
+- `Φ143.75 的圆柱面在图上没有直径/半径尺寸`（Φ、R、M 螺纹小径、槽宽都算数；齿轮齿根圆这种按规定不注的用 ignore_r）；
+- `视图有 N 段虚线，内部结构是不是该剖开`——只是提示。
+
+**它查不了的**：该不该剖、视图选得好不好、尺寸基准选得合不合理（只查连通，不查从哪儿标）、斜视图里的尺寸、工艺上该不该标。
+这些还是要人（老师/审图人）看——这套流程出的图**没经过老师或审图人审过**。
 
 ## 3. SolidWorks 建模（`scripts/sw_part.py`；优先用 SolidWorks MCP）
 
@@ -210,6 +303,27 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 ```
 
 `place`：零件自身轴线（螺栓/键/销/轴承 +X，螺母/垫圈 +Z）转到 axis，零件上的参考点 ref 放到 origin，`up` 定第二个方向（零件 +Y 转去哪：螺栓头对边、键宽）。各标准件生成后的自身坐标约定写在 sw_std.py 的 `LOCAL`/`AXIS` 注释里。零件要先在 SW 里打开才能插入。
+
+### 3.1 更多标准件：直接读 Toolbox 尺寸库（2026-11-08）
+
+`C:\SOLIDWORKS Data\lang\english\swbrowser.sldedb` 就是 SQLite：`GB_TYPE_*` 每种件一行（类型名、基础零件、配置表、数据表），
+`GB_CFG_*` 写着每个驱动尺寸名（`d@Sketch2`）取哪张表哪一列、按什么条件过滤，`GB_DATA_*` 是尺寸表。`toolbox_db.py` 把这套规则解释一遍，
+**尺寸全部来自 SW 官方库，不是手抄**。Toolbox GB 里有的件都能生成（几百种）：
+```python
+path, info = sw_std.make_tb(sw, "screw", "M8x25", out)          # GB/T 70.1 内六角圆柱头螺钉
+sw_std.make_tb(sw, "screw_hex", "M8x25", out)                    # GB/T 5783 六角头螺栓全螺纹（端盖螺钉）
+sw_std.make_tb(sw, "screw_pan", "M5x12", out)                    # GB/T 67 开槽盘头螺钉
+sw_std.make_tb(sw, "spring_washer", "10", out)                   # GB/T 93 弹簧垫圈
+sw_std.make_tb(sw, "taper_bearing", "30206", out)                # GB/T 297 圆锥滚子轴承
+sw_std.make_tb(sw, "oring", "30x3.55", out)                      # GB/T 3452.1 O 形圈
+sw_std.make_any(sw, "GB/T 893", {"Size": "..."}, out)            # 其他任意件：类型名一部分 + 选项（toolbox_db.DB().choices 列可选值）
+sw_std.make_felt(sw, 30, out)                                    # 毡圈 JB/ZQ 4606（Toolbox 没有，自建；info["槽"] 给端盖槽尺寸）
+```
+规格不在表里直接报错并列出可选值。实测（std_demo.py）：M8×25 内六角 外框 X 0..33、头 Φ13；30206 T=17.25 D=62；弹簧垫圈 10：d 10.9 s=b=2.6。
+- Toolbox 的 5783 表里 s、k 存的是极限值（M8：12.73、5.45），`make_tb` 已改成公称值（13、5.3）。别的件第一次用也看一眼外框。
+- 毡圈表是按《机械设计课程设计手册》**手录**的（Toolbox 没有），第一次用对一遍手册。
+- 角度尺寸（锥轴承的接触角）库里是度：`Parameter.GetType` = 1 时按角度设（实测）。
+- 库里登记的路径有时和实际目录对不上（O 形圈），`make_any` 会按文件名在库目录里找。
 
 ## 4. 踩过的坑
 
@@ -273,7 +387,15 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 | `check()` 报 *Null extents* 崩掉 | 明细栏空格写了空字符串，没有外框。已跳过 |
 | `AddDimRotated(…, 90°)` 建的竖直尺寸，`Rotation` 读回来是 0 | 实测如此。要判断尺寸方向用 `dimlin` 记在 `self._dims` 里的角度（`break_center_under_text` 已这样做） |
 | 配合尺寸文字挪到轴线旁边（改 TextPosition）后，尺寸线拖出一长截，字压到轴承上 | 窄的轴段上别挪字：字留在中间，用 `break_center_under_text` 把点画线断开（国标做法） |
+| `check()` 出校核图时 `lay.ConfigName = …` 连续报 *Invalid input*（两个 pc3 都不行），随后 AutoCAD 进程消失；下一轮 Open 报“远程过程调用失败” | 2026-11-08 装配图连跑多轮后出现一次。`Sheet.__enter__` 现在 Open 失败时查 acad.exe 还在不在，不在就 `live_acad()` 重启再开一次 |
+| `check()` 出完校核 PDF 紧接着 `check_geometry` 读对象报“被呼叫方拒绝接收呼叫”（消息过滤器也没挡住） | AutoCAD 打印后还在后台忙。`check()` 现在先 `_idle(120)` 再跑，整段再包一层 retry |
 | 旧时间戳 PDF 越积越多、删不掉 | 原因是 AutoCAD 打印完自动用 WPS 打开、锁住文件。现在用 `DWG To PDF NoView.pc3`（`acad_common.ensure_pdf_pc3()` 复制 DWG To PDF.pc3、只把 View_New_File 改成 FALSE、按 adler32 重写文件头），打印完不再打开；`Sheet` 退出时删掉同名的旧时间戳 PDF（留最新的出图和校核图）。新生成的 pc3 要先 `RefreshPlotDeviceInfo` 再设，否则 Invalid input |
+| 装配图剖视里所有零件的剖面线同一个方向、同样疏密，相邻零件分不开（2026-11-10 末端执行器、机械臂部装图） | SW 导出就是统一的 ANSI31。出图后调 `s.stagger_hatches()` 重新分配（§2.4） |
+| 错开以后同一零件的几块剖面线方向不一样 | SW 每个封闭区域导成一块 HATCH，被孔、轴隔开的几块在邻接关系里互不相干。镜像对称的会自动并组；不完全对称的给 `axes`（要用真正的对称轴，如关节轴线；偶然配上对的镜像轴会把小零件翻进别的零件里）；镜像也认不出来的用 `same` 指定 |
+| 局部放大图里的剖面线没跟着父视图改 | 放大图的剖面线导出为 `SW_HATCH_n` 块里的线段，不是 HATCH。给 `stagger_hatches(details=…)`：按同名 DXF 找出这些线段，删掉后按新样式重画 |
+| 橡胶、尼龙件被剖到，画成了金属的 45° 斜线 | SW 不分材料。`s.hatch_material(点, "非金属", 0.5)` 换交叉网格，要在 `stagger_hatches` 之前调 |
+| 装配图里的齿轮只是一个圆柱的矩形轮廓，没有齿顶线和分度线 | 装配模型里齿轮只能按分度圆柱建（按齿顶圆建两轮会干涉）。出图后非圆视图用 `gear_side`、圆视图用 `gear_arc` 改成规定画法；圆视图里只露出一段圆弧的也能处理 |
+| 改成规定画法后，后面零件的线戳进齿顶圆和分度圆之间；分度线伸出端面 3 mm 穿进了紧挨着的零件（2026-11-10 末端执行器俯视图、A-A） | SW 只按分度圆柱遮挡，轮齿那一圈它不知道。`gear_side` / `gear_arc` 已把截在分度圆柱轮廓上的线改截到齿顶；分度线碰到第一条横穿它的粗实线就停 |
 
 ### 4.3 SolidWorks 建模 / 装配 / MCP
 
@@ -293,9 +415,19 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 | SW `CreateMassProperty` 找不到成员；`GetMaterialPropertyName2` 类型不匹配 | byref 参数要传 `VARIANT(VT_BYREF\|…)`；质量用 `GetMassProperties(1, st)[5]` |
 | `GetMassProperties` 返回 None | 还在草图编辑状态。先 `InsertSketch(True)` 退出草图、`EditRebuild3` 再算 |
 | `body.GetFaces` / `face.GetBox` 一会儿是属性一会儿是方法（报 *'method' object is not iterable*） | 晚绑定不稳定：`x = b.GetFaces; x = x() if callable(x) else x` |
-| **SolidWorks 进程私有内存涨到 15 GB**，接着 AutoCAD 打开文档失败、OpenBLAS 报内存不够（2026-11-08，连续建零件/装配/出 6 张工程图之后） | SW 关了文档也不怎么释放。一批 SW 工作做完、转去 AutoCAD 前：`sw.CloseAllDocuments(True); sw.ExitApp()`，下次 `connect()` 自动重开。跑之前可以看一眼 `Get-Process SLDWORKS` 的 PrivateMemorySize |
+| **SolidWorks 进程私有内存涨到 15 GB**，接着 AutoCAD 打开文档失败、OpenBLAS 报内存不够（2026-11-08，连续建零件/装配/出 6 张工程图之后） | SW 关了文档也不怎么释放。**现在自动处理**（`sw_mem.py`）：`sw_views.connect()` / `sw_part.connect()` 之前、`export()` 之后、`Sheet` 进 AutoCAD 之前各查一次私有内存，超过 config.json 的 `sw_mem_limit_gb`（默认 6）就关闭全部文档、`ExitApp`，60 s 不退就 taskkill；下次 connect 自动重开。**有未保存的文档时不退**，只打印警告。实测 5.2 GB → 9.5 s 退干净。手动看：`python sw_mem.py` |
+| 晚绑定：`face.GetSurface` 用 `callable()` 判断后调用，报“找不到成员” | 属性返回的 COM 对象本身也 callable（`__call__` 调默认成员）。判断“是不是没带括号的方法”要用 `inspect.ismethod(x)`（`part_features` 的 `V()`）。老代码里 `x() if callable(x) else x` 对返回 COM 对象的属性会出错 |
+| 投影视图、剖视图也显示了虚线（开虚线在建完剖视之后也一样） | 父视图 `hidden_lines(front, True)` 后，`projected` 出来的俯视图和剖视图跟着变（2026-11-08 箱盖实测）。对它们再 `hidden_lines(v, False)` |
+| 零件特征里有一大堆 R≤3 的圆柱面 | 铸造圆角。`part_features(fillet_r=3)` 默认跳过“半径 ≤3 且不满半圈”的 |
 | 斜视图上做局部剖：`CreateBreakOutSection` 返回成功，可视图里什么都没变 | 实测（整个视图框都圈上也一样）。斜视图上别用局部剖；要"半边剖开"就做全剖再 `clip_hatch` |
 | 装配干涉检查报螺栓和螺母各重叠约 193 mm³ | 螺栓按大径建、螺母按小径建，旋合段的那一圈。正常，不用改 |
+
+### 4.4 改 skill 本身
+
+| 症状 | 原因 / 解决 |
+|---|---|
+| 按原文替换改 `scripts/*.py`、SKILL.md 时提示找不到原文 | 这些文件是 CRLF 换行。用 Python 读写时加 `newline=""`，补丁里的换行先换成 `\r\n` |
+| 改坏了要回退 | 改之前把原文件复制成 `原名.bakMMDDHHMM`（月日时分），`scripts/` 里留着历次的备份 |
 
 ## 5. 画法规范（国标要点）
 
@@ -306,3 +438,5 @@ sw_std.place(asm, sw, path, "bolt", (x, 12, z), (0, -1, 0), ref=(外框xmax - 40
 - 回转体的直径（Φ）标在非圆视图上；倒角用 `leader` 注 C1，同样的有几处就写 n×C1。
 - **尺寸**：链式或基线式，不要重复标注，也不要标成封闭尺寸链；同一方向的尺寸排在同一侧，小尺寸在里、大尺寸在外。
 - 标题栏写图名、图号、比例、材料、设计人和日期；技术要求放在图面左下方的空白处。
+- **装配图剖面线**（GB/T 4457.5、GB/T 4459.7）：相邻零件方向相反，或方向一致而间距不同；同一零件在各视图（含局部放大图）方向、间距一致。金属用 45° 细实线（ANSI31），非金属用交叉网格（ANSI37）；图上宽 ≤2 mm 的剖面允许涂黑，相邻两块涂黑之间留 ≥0.7 mm。实心件（轴、键、销、螺栓、连杆）纵剖和外购件不画剖面线；滚动轴承内外圈剖面线可以一致，滚动体不画。做法：`unhatch` → `hatch_material` → `stagger_hatches`（§2.4）。
+- **装配图里的齿轮**（GB/T 4459.2）：非圆外形视图齿顶线粗实线、分度线点画线、齿根线不画；啮合区两轮的齿顶线都不画，分度线画一根粗实线。过轴线剖开时轮齿按不剖，啮合区一个齿轮的齿顶线画粗实线，另一个被挡住的画虚线或不画（`gear_teeth` 的 `hidden`）。圆视图齿顶圆粗实线、分度圆点画线（两轮相切）、齿根圆不画。装配模型按分度圆柱建，出图后用 `gear_side` / `gear_arc` 改（§2.4）。

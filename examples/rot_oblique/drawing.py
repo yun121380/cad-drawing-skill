@@ -10,7 +10,7 @@ off = lambda p, dx=0, dy=0: (p[0] + dx, p[1] + dy)
 
 with Sheet(D + r"\rb_sw.DWG", D + r"\旋转剖与斜视图.dwg", views=L["VIEWS"]) as s:
     s.frame()
-    s.title_block_gb("摇臂与弯板", "SL-RB-01", material="Q235A", scale="1:1",
+    s.title_block_gb("摇臂与弯板", "SL-RB-01", material="Q235A", scale="1:1", company="某某大学",
                      date="2026.11")
     # ---------------- 旋转剖：S1 留 +X 半边，S2 的斜臂半边转过来拼上
     side_boss = (lambda a0, a1, q: 1 if (a1[0] - a0[0]) * (q[1] - a0[1]) - (a1[1] - a0[1]) * (q[0] - a0[0]) >= 0 else -1)(

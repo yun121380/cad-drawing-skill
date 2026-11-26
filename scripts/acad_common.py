@@ -35,6 +35,41 @@ PDF_MEDIA = {"A4": "ISO_full_bleed_A4_(297.00_x_210.00_MM)",
              "A1": "ISO_full_bleed_A1_(841.00_x_594.00_MM)",
              "A0": "ISO_full_bleed_A0_(841.00_x_1189.00_MM)"}
 
+# DWG To PDF.pc3 里 A0 只有竖放的 841×1189：横放的 A0 图纸转 90° 打（不转就居中裁掉左右各 174 mm）。
+# AutoCAD 打出的页面自带 /Rotate 270（实测 2026-11-09）；没带时补上同样的转角，看图、渲染、文字压线校核都还按横放的整张图纸算
+PDF_ROTATE = {"A0": (1, 270)}           # 图幅: (PlotRotation, PDF 页面顺时针转角)
+
+
+def plot_rotation(sheet):
+    return PDF_ROTATE.get(sheet, (0, 0))[0]
+
+
+def upright_pdf(pdf, sheet, settle=60):
+    """竖放介质上转着打的横图：等 PDF 写完（大小连续 2 秒不变），把第一页转成横向显示。别的图幅不动。"""
+    if sheet not in PDF_ROTATE:
+        return
+    import fitz
+    last, same = -1, 0
+    for _ in range(settle * 2):
+        size = os.path.getsize(pdf) if os.path.exists(pdf) else -1
+        same = same + 1 if size == last and size > 0 else 0
+        if same >= 4:
+            break
+        last = size
+        time.sleep(0.5)
+    d = fitz.open(pdf)
+    try:
+        pg = d[0]
+        if pg.rotation == 0 and pg.rect.width < pg.rect.height:
+            pg.set_rotation(PDF_ROTATE[sheet][1])
+            tmp = pdf + ".tmp"
+            d.save(tmp)
+            d.close()
+            os.replace(tmp, pdf)
+    finally:
+        if not d.is_closed:
+            d.close()
+
 # "DWG To PDF NoView.pc3"：DWG To PDF.pc3 的副本，只把 View_New_File 改成 FALSE —— 打印完不再自动用 WPS 打开，
 # 旧 PDF 就不会被锁住（2026-11-08）。由 ensure_pdf_pc3() 自动生成（解压 pc3、改一行、按 adler32 重写文件头）。
 PDF_PC3 = "DWG To PDF NoView.pc3"

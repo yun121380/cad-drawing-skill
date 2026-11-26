@@ -3,5 +3,12 @@
   "company": "某某大学",
   "class": "某某班",
   "designer": "",
-  "date": ""
+  "date": "",
+  "sw_mem_limit_gb": 6,
+  "_sw_mem": "SolidWorks 私有内存超过这么多 GB 时，connect/export/进 AutoCAD 前自动让它退出重开（有未保存文档时不退）",
+  "_路径": "换电脑时改下面四个路径，再跑 python env_check.py 自检",
+  "acad_exe": "C:\\Program Files\\Autodesk\\AutoCAD 2024\\acad.exe",
+  "sw_exe": "C:\\Program Files\\SOLIDWORKS Corp\\SOLIDWORKS\\SLDWORKS.exe",
+  "sw_templates": "C:\\ProgramData\\SolidWorks\\SOLIDWORKS 2025\\templates",
+  "toolbox_gb": "C:\\SOLIDWORKS Data\\browser\\GB"
 }

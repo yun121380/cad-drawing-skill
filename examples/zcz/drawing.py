@@ -27,7 +27,7 @@ with Sheet(D + r"\zcz_sw.DWG", D + r"\轴承座.dwg", views=VIEWS) as s:
     s.frame()
     mass = json.load(open(os.path.join(D, "build.json"), encoding="utf-8"))["mass_kg"]   # 重量取模型实算值
     s.title_block_gb("轴承座", "ZCZ-01", material="HT200", scale="1:1", weight=f"{mass:.2f}",
-                     designer="", date="2026.11")
+                     company="某某大学", designer="", date="2026.11")
 
     # ---- 清理：剖切面过对称面且按投影关系配置 → A-A 标注省略；SW 的放大图圆圈旁的 "I" 换成带指引线的
     x0 = FC[0]

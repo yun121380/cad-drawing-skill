@@ -8,7 +8,7 @@ import pythoncom
 from win32com.client import VARIANT
 
 mm = 0.001
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+OUT = os.path.dirname(os.path.abspath(__file__)), "out"
 part = os.path.join(OUT, "bush_half.SLDPRT")
 sw = S.connect(); sw.CloseAllDocuments(True)
 p = S.new_part(sw)

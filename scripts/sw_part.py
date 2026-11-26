@@ -8,14 +8,27 @@ import pythoncom
 import win32com.client
 from win32com.client import VARIANT
 
-TPL = r"C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates"
+def _cfg(k, default):
+    import json
+    try:
+        return json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"),
+                              encoding="utf-8")).get(k) or default
+    except Exception:
+        return default
+
+
+TPL = _cfg("sw_templates", r"C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates")   # 换电脑改 config.json
 NOTHING = VARIANT(pythoncom.VT_DISPATCH, None)  # SelectByID2 的 Callout 参数必须这样传
 mm = 0.001  # API 单位是米
 
 PLANES = {"front": "前视基准面", "top": "上视基准面", "right": "右视基准面"}  # 中文 gb 模板
 
 
-def connect(visible=True):
+def connect(visible=True, mem_limit_gb=None):
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import sw_mem
+    sw_mem.recycle(mem_limit_gb)                           # 内存超过上限先退出重开（见 sw_mem）
     sw = win32com.client.Dispatch("SldWorks.Application")  # 没开会自动启动，约 30-60 s
     sw.Visible = visible
     return sw  # 注意 sw.RevisionNumber 是属性不是方法

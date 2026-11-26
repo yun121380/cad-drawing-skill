@@ -3,12 +3,12 @@
   主视图：x = 120 + X，y = 152.5 + Y；轴线 x=120；底 152.5、凸缘顶 167.5、顶 247.5；筒体 x 90..150、内孔 105..135
           径向孔 Φ8：y 208.5..216.5（轴线 212.5），x 90..105
   俯视图：中心 (120, 85)，R50 / R30 / R15，4×Φ12 在 R40 上"""
-import sys
 import os
+import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from sw2acad import Sheet, P
 
-D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+D = os.path.dirname(os.path.abspath(__file__)), "out"
 VIEWS = [(61, 144, 179, 256), (61, 26, 179, 144)]
 with Sheet(D + r"\bush_half_sw.DWG", D + r"\bush_half_gb.dwg", views=VIEWS) as s:
     s.frame()

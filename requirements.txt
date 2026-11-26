@@ -1,0 +1,7 @@
+pywin32
+comtypes
+pymupdf
+ezdxf
+shapely
+numpy
+scipy

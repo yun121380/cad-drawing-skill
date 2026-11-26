@@ -11,12 +11,23 @@
     V.export(drw, r"...\name")                                   # name.SLDDRW/.DWG/.DXF/.PDF
     V.dump_dxf(r"...\name.DXF", views)                           # 列出视图区内的粗线坐标、圆、圆弧，供标注取点
 """
-import os
+import os, sys
 import pythoncom
 import win32com.client as wc
 
-TPL = r"C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates\gb_%s.drwdot"
-SW_EXE = os.environ.get("SW_EXE", r"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SLDWORKS.exe")   # 装在别处就设环境变量 SW_EXE
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+def _cfg(k, default):
+    """换电脑时路径写进 scripts/config.json（env_check.py 会告诉你缺哪个）。"""
+    import json
+    try:
+        return json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"),
+                              encoding="utf-8")).get(k) or default
+    except Exception:
+        return default
+
+
+TPL = os.path.join(_cfg("sw_templates", r"C:\ProgramData\SolidWorks\SOLIDWORKS 2025\templates"), "gb_%s.drwdot")
+SW_EXE = _cfg("sw_exe", r"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SLDWORKS.exe")
 
 
 def _none():
@@ -27,8 +38,10 @@ def _ref_i4():
     return wc.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
 
 
-def connect():
-    import time
+def connect(mem_limit_gb=None):
+    """连上 SW（没开就启动）。先看内存：SW 私有内存超过上限（config.json 的 sw_mem_limit_gb）就退出重开，见 sw_mem。"""
+    import time, sw_mem
+    sw_mem.recycle(mem_limit_gb)
     try:
         return wc.GetActiveObject("SldWorks.Application")
     except Exception:
@@ -403,6 +416,13 @@ def export(drw, out_noext, exts=("SLDDRW", "DWG", "DXF", "PDF")):
     finally:
         sw.SetUserPreferenceIntegerValue(136, old)
     print("导出", out_noext, exts, "| swDxfOutputNoScale 原值", old)
+    import sw_mem
+    gb = sw_mem.private_gb()
+    if gb >= sw_mem.limit_default():          # 一批视图出完：内存涨上去了就让 SW 退出，下次 connect 自动重开
+        drw = None; sw = None
+        sw_mem.recycle()
+    else:
+        print(f"SolidWorks 私有内存 {gb:.1f} GB")
 
 
 def dump_dxf(dxf_path, views):
@@ -423,3 +443,43 @@ def dump_dxf(dxf_path, views):
                 extra = f" {e.dxf.start_angle:.1f}→{e.dxf.end_angle:.1f}°" if t == "ARC" else ""
                 print(f"  {t} 圆心 ({e.dxf.center.x:.2f}, {e.dxf.center.y:.2f}) R{e.dxf.radius:.3f}{extra}")
         print("  粗线 x:", sorted(xs)); print("  粗线 y:", sorted(ys))
+
+
+def part_features(sw, part_path, out_json=None, fillet_r=3.0):
+    """读零件的几何特征给尺寸完整性审查（Sheet.audit_dims）用（2026-11-08）：
+    planes：垂直于 X/Y/Z 的平面 [(轴号, 坐标)]；cyls：圆柱面 [(轴线方向, 轴线上一点, 半径, 张角)]（mm）。
+    半径 ≤ fillet_r 且张角 < 180° 的当圆角，不算。零件要能打开（只读）。"""
+    import json, math, inspect
+    # 晚绑定：无参方法有时是方法、有时被当属性。不能用 callable() 判断——属性返回的 COM 对象本身也 callable，
+    # 一调就“找不到成员”（2026-11-08 实测 face.GetSurface）。要用 inspect.ismethod。
+    V = lambda x: x() if inspect.ismethod(x) else x
+    e, w = _ref_i4(), _ref_i4()
+    doc = sw.OpenDoc6(part_path, 1, 1 | 64, "", e, w)
+    if doc is None:
+        raise RuntimeError(f"打不开 {part_path}")
+    planes, cyls = [], []
+    try:
+        for b in doc.GetBodies2(0, True) or []:
+            for f in V(b.GetFaces) or []:
+                sf = V(f.GetSurface)
+                if V(sf.IsPlane):
+                    p = list(V(sf.PlaneParams))            # [nx, ny, nz, px, py, pz]
+                    n = p[:3]
+                    for ax in range(3):
+                        if abs(abs(n[ax]) - 1) < 1e-6:
+                            planes.append((ax, round(p[3 + ax] * 1000, 4)))
+                elif V(sf.IsCylinder):
+                    c = list(V(sf.CylinderParams))      # [ox, oy, oz, ax, ay, az, r]
+                    uv = V(f.GetUVBounds)
+                    span = math.degrees(abs(uv[1] - uv[0])) if uv else 360
+                    r = c[6] * 1000
+                    if r <= fillet_r and span < 179:
+                        continue
+                    cyls.append(([round(v, 6) for v in c[3:6]], [round(v * 1000, 4) for v in c[:3]], round(r, 4), round(span, 1)))
+        box = [round(v * 1000, 3) for v in doc.GetPartBox(True)]
+    finally:
+        sw.CloseDoc(doc.GetTitle)
+    res = {"planes": sorted(set(map(tuple, planes))), "cyls": cyls, "box": box, "part": part_path}
+    if out_json:
+        json.dump(res, open(out_json, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    return res

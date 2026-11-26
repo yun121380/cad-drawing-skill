@@ -14,12 +14,21 @@ C:\\SOLIDWORKS Data\\browser\\GB\\...\\*.sldprt 里驱动尺寸都有名字（�
     sw_std.make(sw, "pin", "6x30", out_dir)                # GB/T 119.1 圆柱销 d×l
     sw_std.make(sw, "bearing", "6206", out_dir)            # GB/T 276 深沟球轴承
 返回 (路径, 信息 dict)，信息里有 代号、名称、规格、材料，直接给明细栏用。"""
-import os, re
+import os, re, math
 import pythoncom
 import win32com.client as wc
 from win32com.client import VARIANT
 
-LIB = r"C:\SOLIDWORKS Data\browser\GB"
+def _cfg(k, default):
+    import json
+    try:
+        return json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"),
+                              encoding="utf-8")).get(k) or default
+    except Exception:
+        return default
+
+
+LIB = _cfg("toolbox_gb", r"C:\SOLIDWORKS Data\browser\GB")      # 换电脑改 config.json
 NONE = VARIANT(pythoncom.VT_DISPATCH, None)
 
 PITCH = {6: 1, 8: 1.25, 10: 1.5, 12: 1.75, 16: 2, 20: 2.5, 24: 3, 30: 3.5}
@@ -165,3 +174,176 @@ def make(sw, kind, size, out_dir, material="普通碳钢"):
         return out, info
     finally:
         sw.CloseDoc(p.GetTitle if p else title)
+
+
+# ====================================================================== 2026-11-08：任意 Toolbox GB 件（读 Toolbox 自带尺寸库）
+# 上面 make() 的六种件是手录尺寸表；下面 make_any() 直接解释 Toolbox 的配置库（toolbox_db），尺寸来自 SW 官方库。
+# 新增常用件（kind → Toolbox 里的类型名、中文名、默认性能等级/材料）：
+TB_KINDS = {
+    "screw":         ("GB/T70.1-2000", "内六角圆柱头螺钉", "8.8 级"),       # size "M8x25"
+    "screw_hex":     ("GB/T5783-2000", "六角头螺栓（全螺纹）", "8.8 级"),   # size "M8x25"，端盖螺钉常用
+    "screw_pan":     ("GB/T67-2000", "开槽盘头螺钉", "4.8 级"),            # size "M5x12"
+    "spring_washer": ("GB/T 93-1987", "标准型弹簧垫圈", "65Mn"),           # size "10"
+    "taper_bearing": ("GB/T297-1994", "圆锥滚子轴承", ""),                 # size "30206"
+    "oring":         ("series G (3452.1)", "O 形橡胶密封圈", "丁腈橡胶"),   # size "30x3.55"（内径×截面直径）
+}
+# 生成后零件自身坐标（实测外框，2026-11-08）：
+#   screw / screw_hex / screw_pan：轴线 +X，头顶在 X=0，杆朝 +X，头下支承面在 X = 外框 xmax − l（同 bolt）
+#   spring_washer / oring：轴线 Z（同 washer）；taper_bearing / felt：轴线 X（同 bearing）
+LOCAL.update({k: (0, 0, 0) for k in TB_KINDS}); LOCAL["felt"] = (0, 0, 0)
+AXIS.update({"screw": (1, 0, 0), "screw_hex": (1, 0, 0), "screw_pan": (1, 0, 0), "spring_washer": (0, 0, 1),
+             "taper_bearing": (1, 0, 0), "oring": (0, 0, 1), "felt": (1, 0, 0)})
+
+
+def _tb_sel(kind, size):
+    nums = re.findall(r"[\d.]+", size)
+    if kind in ("screw", "screw_hex", "screw_pan"):
+        return {"Size": f"M{nums[0]}", "Length": nums[1]}, f"M{nums[0]}×{nums[1]}"
+    if kind == "spring_washer":
+        return {"Size": nums[0]}, nums[0]
+    if kind == "taper_bearing":
+        return {"Train": size[1:3], "Size": size}, size
+    if kind == "oring":
+        return {"Inside Diameter": nums[0], "Thickness": nums[1]}, f"{nums[0]}×{nums[1]} G"
+    raise ValueError(kind)
+
+
+_DB = None
+
+
+def make_any(sw, key, sel, out_dir, cname=None, grade="", spec=None, material="普通碳钢", override=None):
+    """按 Toolbox 配置库生成任意 GB 标准件。key：Toolbox 类型名的一部分（'GB/T70.1'、'GB/T 93'…，toolbox_db.DB.find）；
+    sel：规格选择（{'Size': 'M8', 'Length': '25'}，键是配置表里的选项名，db.choices 可列出可选值）。
+    返回 (路径, 信息)。信息同 make()：代号、名称、规格、材料、标记、质量kg、外框；另有 '没找到的尺寸'。
+    规格不在表里直接报错并列出可选值。"""
+    global _DB
+    import toolbox_db
+    _DB = _DB or toolbox_db.DB()
+    t = _DB.find(key)
+    r = _DB.resolve(t, sel)
+    r["dims"].update(override or {})     # 个别尺寸用公称值覆盖（Toolbox 有的表存的是极限尺寸）
+    if r["missing"]:
+        raise ValueError(f"{t['name']}：规格不在 Toolbox 表里 —— " + "；".join(r["missing"]))
+    m = re.search(r"GB[/\-]?T?\s*(\d+(?:\.\d+)?)(?:\s*-\s*((?:19|20)\d\d))?", r["mark"] or t["name"])
+    std = (f"GB/T {m.group(1)}" + (f"-{m.group(2)}" if m.group(2) else "")) if m else t["name"]
+    spec = spec or r["spec"]
+    cname = cname or r["name_en"]
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, f"{std.split('-')[0].replace('/', '').replace(' ', '')}_{cname}_"
+                                f"{spec.replace('×', 'x').replace(' ', '')}.SLDPRT")
+    e, w = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0), VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+    rel = re.sub(r"^GB[\\/]", "", t["filename"])
+    src = os.path.join(LIB, rel)
+    if not os.path.exists(src):          # 库里登记的路径和实际目录有时对不上（O 形圈实测），按文件名找
+        base = os.path.basename(rel).lower()
+        hit = [os.path.join(dp, f) for dp, _, fs in os.walk(LIB) for f in fs if f.lower() == base]
+        src = hit[0] if hit else src
+    p = sw.OpenDoc6(src, 1, 1 | 64, "", e, w)
+    if p is None:
+        raise RuntimeError(f"打不开 Toolbox 基础零件 {rel}（错误 {e.value}）")
+    title = p.GetTitle
+    try:
+        p.DeleteDesignTable
+        missing = []
+        for name, v in r["dims"].items():
+            prm = p.Parameter(name)
+            if prm is None:
+                missing.append(name); continue
+            gt = prm.GetType
+            ang = (gt() if callable(gt) else gt) == 1          # 1 = 角度尺寸（库里是度），0 = 长度（mm）
+            prm.SetSystemValue3(math.radians(v) if ang else v / 1000, 2, NONE)
+        p.EditRebuild3
+        for fn, act in [(f, "on") for f in r["on"]] + [(f, "off") for f in r["off"]]:
+            p.ClearSelection2(True)
+            for typ in ("BODYFEATURE", "COSMETICTHREAD"):
+                if p.Extension.SelectByID2(fn, typ, 0, 0, 0, False, 0, NONE, 0):
+                    p.EditUnsuppress2 if act == "on" else p.EditSuppress2
+                    break
+        p.ClearSelection2(True)
+        try:
+            p.Extension.ToolboxPartType = 0
+        except Exception:
+            pass
+        p.SetMaterialPropertyName2("", "SOLIDWORKS Materials", material)
+        cpm = p.Extension.CustomPropertyManager("")
+        info = {"代号": std, "名称": cname, "规格": spec, "材料": grade, "标记": f"{cname} {std.split('-')[0]} {spec}",
+                "toolbox": t["name"]}
+        for k, v in info.items():
+            cpm.Add3(k, 30, v, 1)
+        p.EditRebuild3
+        if os.path.exists(out):
+            os.remove(out)
+        rr = p.SaveAs3(out, 0, 2)
+        if rr != 0 or not os.path.exists(out):
+            raise RuntimeError(f"另存失败 {rr}：{out}")
+        st = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        mp = p.Extension.GetMassProperties(1, st)
+        info["质量kg"] = round(mp[5], 4); info["体积mm3"] = round(mp[3] * 1e9, 1)
+        info["外框"] = [round(v * 1000, 2) for v in p.GetPartBox(True)]
+        info["尺寸"] = r["dims"]
+        if missing:
+            info["没找到的尺寸"] = missing
+        return out, info
+    finally:
+        sw.CloseDoc(p.GetTitle if p else title)
+
+
+def make_tb(sw, kind, size, out_dir, material="普通碳钢"):
+    """常用新增件的简写：make_tb(sw, "screw", "M8x25", dir)、("spring_washer", "10")、("taper_bearing", "30206")、
+    ("screw_hex", "M8x25")、("screw_pan", "M5x12")、("oring", "30x3.55")。"""
+    key, cname, grade = TB_KINDS[kind]
+    sel, spec = _tb_sel(kind, size)
+    ov = None
+    if kind == "screw_hex":     # Toolbox 的 5783 表里 s、k 存的是极限值（M8：12.73、5.45），改成公称值（头部同 GB/T 5782）
+        d = int(float(re.findall(r"[\d.]+", size)[0]))
+        if d in BOLT:
+            ov = {"s@Sketch2": BOLT[d][0], "k@BaseHead": BOLT[d][1]}
+    path, info = make_any(sw, key, sel, out_dir, cname=cname, grade=grade, spec=spec,
+                          material="天然橡胶" if kind == "oring" else material, override=ov)
+    info["kind"] = kind
+    return path, info
+
+
+# ---------------------------------------------------------------------- 毡圈油封（Toolbox 没有，自己建）
+# JB/ZQ 4606-1997 毡圈油封及槽：轴径 d: (毡圈 D, d1, B, 槽 D0, d0, b)。
+# 按《机械设计课程设计手册》录入——这是手录的表，第一次用请对一遍手册。
+FELT = {16: (29, 14, 6, 28, 16, 5), 20: (33, 19, 6, 32, 21, 5), 25: (39, 24, 7, 38, 26, 6), 30: (45, 29, 7, 44, 31, 6),
+        35: (49, 34, 7, 48, 36, 6), 40: (53, 39, 7, 52, 41, 6), 45: (61, 44, 8, 60, 46, 7), 50: (69, 49, 8, 68, 51, 7),
+        55: (74, 53, 8, 72, 56, 7), 60: (80, 58, 8, 78, 61, 7), 65: (84, 63, 8, 82, 66, 7), 70: (90, 68, 8, 88, 71, 7),
+        75: (94, 73, 8, 92, 77, 7), 80: (102, 78, 9, 100, 82, 8)}
+
+
+def make_felt(sw, d, out_dir):
+    """毡圈油封 d（轴径）：矩形截面 d1..D × B 绕 X 轴旋转，X ∈ [−B/2, B/2]（同 bearing 约定）。
+    返回 (路径, 信息)；信息里另有 '槽'=(D0, d0, b) 给端盖零件图用。"""
+    import sw_part as S
+    D_, d1, B, D0, d0, b = FELT[int(d)]
+    p = S.new_part(sw)
+    sm = S.sketch_on(p, "front")                       # 前视基准面：草图 x = 模型 X，y = 模型 Y
+    sm.CreateCenterLine(-0.1, 0, 0, 0.1, 0, 0)
+    pts = [(-B / 2, d1 / 2), (B / 2, d1 / 2), (B / 2, D_ / 2), (-B / 2, D_ / 2)]
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        sm.CreateLine(x1 / 1000, y1 / 1000, 0, x2 / 1000, y2 / 1000, 0)
+    p.SketchManager.AddToDB = False
+    f = p.FeatureManager.FeatureRevolve2(True, True, False, False, False, False, 0, 0, 2 * math.pi, 0,
+                                         False, False, 0, 0, 0, 0, 0, True, False, True)
+    if f is None:
+        raise RuntimeError("毡圈旋转失败")
+    info = {"代号": "JB/ZQ 4606-1997", "名称": "毡圈", "规格": f"{int(d)}", "材料": "半粗羊毛毡",
+            "标记": f"毡圈 {int(d)} JB/ZQ 4606-1997", "槽": (D0, d0, b), "kind": "felt"}
+    cpm = p.Extension.CustomPropertyManager("")
+    for k in ("代号", "名称", "规格", "材料", "标记"):
+        cpm.Add3(k, 30, info[k], 1)
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, f"JBZQ4606_毡圈_{int(d)}.SLDPRT")
+    if os.path.exists(out):
+        os.remove(out)
+    p.EditRebuild3
+    if p.SaveAs3(out, 0, 2) != 0:
+        raise RuntimeError("毡圈另存失败")
+    st = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+    mp = p.Extension.GetMassProperties(1, st)
+    info["体积mm3"] = round(mp[3] * 1e9, 1); info["外框"] = [round(v * 1000, 2) for v in p.GetPartBox(True)]
+    info["质量kg"] = round(mp[3] * 1e9 * 0.3e-6, 4)          # 羊毛毡密度约 0.3 g/cm³
+    sw.CloseDoc(p.GetTitle)
+    return out, info

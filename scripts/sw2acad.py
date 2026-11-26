@@ -13,8 +13,9 @@ import sys, time, os, math
 import pythoncom
 import win32com.client as wc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acad_common import retry, PDF_MEDIA, PDF_PC3, SHEETS, setup_doc
+from acad_common import retry, PDF_MEDIA, PDF_PC3, SHEETS, setup_doc, plot_rotation, upright_pdf
 import com_filter
+import gbtol
 import json as _json
 try:      # 标题栏默认值（学校、班级、设计人），换环境只改 config.json
     CONFIG = _json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), encoding="utf-8"))
@@ -22,7 +23,7 @@ except Exception:
     CONFIG = {}
 com_filter.install()      # AutoCAD 忙时所有 COM 调用自动等待重试，不再抛"被呼叫方拒绝接收呼叫"
 
-ACAD_EXE = os.environ.get("ACAD_EXE", r"C:\Program Files\Autodesk\AutoCAD 2024\acad.exe")
+ACAD_EXE = CONFIG.get("acad_exe") or r"C:\Program Files\Autodesk\AutoCAD 2024\acad.exe"   # 换电脑改 config.json
 
 
 def set_pdf_device(lay):
@@ -106,6 +107,11 @@ class Sheet:
         raise RuntimeError(f"{what} 失败")
 
     def __enter__(self):
+        try:                                   # 转去 AutoCAD 了：SW 内存涨太高会把 AutoCAD 挤崩（2026-11-08 15 GB），先让它退出
+            import sw_mem
+            sw_mem.recycle()
+        except Exception as ex:
+            print("sw_mem 检查失败（忽略）：", ex)
         a = self.a = live_acad()
         # 不要改 SDI！实测（2026-11-07，两次复现）：AutoCAD 刚启动时 SetVariable("SDI", 0) 后再 Documents.Open，
         # 立刻 FATAL ERROR 访问冲突崩溃；不改 SDI 直接 Open 正常。
@@ -120,7 +126,19 @@ class Sheet:
                 for p in olds:
                     d = self._find_doc(p)
                     if d: self._once(lambda: d.Close(False), lambda: not self._find_doc(p), "关闭 " + p)
-        doc = self._once(lambda: a.Documents.Open(self.src), lambda: self._find_doc(self.src), "打开 " + self.src)
+        try:
+            doc = self._once(lambda: a.Documents.Open(self.src), lambda: self._find_doc(self.src), "打开 " + self.src)
+        except RuntimeError:
+            # AutoCAD 进程已经没了（上一轮出图时崩溃，ROT 里还留着它）：Open 报“远程过程调用失败”。重启一次再开
+            # （2026-11-08 实测：上一轮 check() 设 ConfigName 连续 Invalid input 后 AutoCAD 退出）
+            import subprocess
+            alive = "acad.exe" in subprocess.run(["tasklist", "/FI", "IMAGENAME eq acad.exe"], capture_output=True,
+                                                 text=True, errors="ignore").stdout.lower()
+            if alive:
+                raise
+            print("AutoCAD 已退出，重新启动后再打开")
+            a = self.a = live_acad()
+            doc = self._once(lambda: a.Documents.Open(self.src), lambda: self._find_doc(self.src), "打开 " + self.src)
         retry(lambda: doc.Activate()); self.doc = doc
         self._idle()
         retry(lambda: setup_doc(doc, a, self.S))                         # 国标图层 / HZ 字体 / GB 标注样式
@@ -244,6 +262,12 @@ class Sheet:
         self._dims.append((d, tuple(p1[:2]), tuple(p2[:2]), tuple(loc[:2]), ang))
         if txt: d.TextOverride = txt
         return d
+
+    @staticmethod
+    def fit(txt, code=True):
+        """公差带 → 带极限偏差的尺寸文字（查 GB/T 1800.1 表，不用手写）：s.fit("%%C35k6")、s.fit("12N9", code=False)、
+        s.fit("%%C40js6")。'H7/r6' 这种配合代号原样返回。见 gbtol.tol_text。"""
+        return gbtol.tol_text(txt, code)
 
     def dimdia(self, c, r, ang_deg, leader, txt=""):
         self.layer("尺寸"); a = math.radians(ang_deg)
@@ -543,6 +567,142 @@ class Sheet:
         self.circle(c, ra * k, "粗实线"); self.circle(c, r * k, "中心线")
         if rf:
             self.circle(c, rf * k, "细实线")
+
+    def gear_side(self, p0, u, width, ra, r, sides=(1, -1), mesh=(), model_r=None, k=1.0, tol=0.05, ext=3.0):
+        """圆柱齿轮非圆视图不剖时（外形视图）的规定画法（GB/T 4459.2）：齿顶线粗实线、分度线点画线、齿根线省略；
+        mesh 里的那一侧是啮合区（两轮轴线所在平面平行于投影面）：齿顶线不画，节线画粗实线。
+        p0/u/width/ra/r/sides/k 同 gear_teeth。model_r：模型外圆半径，SW 画在 ±model_r 上的两条轮廓线删掉，
+        端面线从 model_r 补到齿顶（啮合侧补到分度线）；后面零件的线 SW 截在这条轮廓线上，改截到齿顶线（轮齿挡住的）。
+        不给 model_r 就当视图里没有这个齿轮，整条端面线都画。分度线伸出端面 ext，端面外紧挨着别的零件时
+        停在第一条横穿它的粗实线前 0.3，不伸进别的零件。
+        装配图里两个齿轮按分度圆建模正好相切、不报干涉，啮合处两条轮廓线重合就是节线。轮齿被剖到的用 gear_teeth。
+        返回删掉的线数。"""
+        L = math.hypot(*u); ux, uy = u[0] / L, u[1] / L; nx, ny = -uy, ux
+        P2 = lambda t, s: (p0[0] + ux * t + nx * s, p0[1] + uy * t + ny * s)
+        loc = lambda q: ((q[0] - p0[0]) * ux + (q[1] - p0[1]) * uy, (q[0] - p0[0]) * nx + (q[1] - p0[1]) * ny)
+        w, mr, er = width * k, (model_r or 0) * k, ra * k
+        lines = []
+        for e in self._items():
+            if retry(lambda: e.ObjectName) == "AcDbLine":
+                lines.append((e, retry(lambda: e.Layer), loc(retry(lambda: e.StartPoint)), loc(retry(lambda: e.EndPoint))))
+        gone, keep = 0, []
+        for e, lay, a, b in lines:
+            if model_r and any(all(abs(sv - sd * mr) < tol and -tol <= tv <= w + tol for tv, sv in (a, b)) for sd in sides):
+                retry(lambda: e.Delete()); gone += 1
+            else:
+                keep.append((e, lay, a, b))
+        for e, lay, a, b in (keep if model_r else ()):
+            if lay not in ("粗实线", "细实线"):
+                continue
+            for end, q, o in ((0, a, b), (1, b, a)):
+                sd = next((sd for sd in sides if sd not in mesh and abs(q[1] - sd * mr) < tol), None)
+                if sd is None or not tol < q[0] < w - tol or sd * o[1] <= mr + tol:
+                    continue
+                if sd * o[1] <= er + tol:
+                    retry(lambda: e.Delete())
+                else:
+                    f = (sd * er - q[1]) / (o[1] - q[1])
+                    pt = P(*P2(q[0] + f * (o[0] - q[0]), sd * er))
+                    retry(lambda: setattr(e, ("StartPoint", "EndPoint")[end], pt))
+                break
+
+        def reach(s0, lo):
+            d = ext + 0.3
+            for e, lay, a, b in keep:
+                if lay == "粗实线" and (a[1] - s0) * (b[1] - s0) <= 0 and abs(a[1] - b[1]) > 1e-9:
+                    t = a[0] + (s0 - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+                    dist = -t if lo else t - w
+                    if dist > tol:
+                        d = min(d, dist)
+            return max(0.0, min(ext, d - 0.3))
+        for sd in sides:
+            if sd in mesh:
+                self.line(P2(0, sd * r * k), P2(w, sd * r * k), "粗实线")              # 啮合区节线
+                edge = r * k
+            else:
+                s0 = sd * r * k
+                self.line(P2(0, sd * er), P2(w, sd * er), "粗实线")                    # 齿顶线
+                self.line(P2(-reach(s0, True), s0), P2(w + reach(s0, False), s0), "中心线")   # 分度线
+                edge = er
+            if mr < edge:
+                for t in (0, w):
+                    self.line(P2(t, sd * mr), P2(t, sd * edge), "粗实线")              # 端面线补到齿顶 / 节线
+        return gone
+
+    def gear_arc(self, c, ra, r, model_r, k=1.0, tol=0.05):
+        """圆柱齿轮圆视图里模型外圆（半径 model_r）露出来的那几段改成规定画法：model_r 是分度圆的改点画线，否则删掉；
+        同样的范围补齿顶圆（粗实线），弧端沿挡住它的那条粗实线延长到齿顶圆上（挡住它的是圆弧时不延长）；齿根圆省略。
+        后面零件的线 SW 截在模型外圆上，改截到齿顶圆（轮齿挡住的）。
+        装配图里齿轮大半被别的零件挡住、只露一段弧时用；整圆都看得见的也行（改完等于 gear_circles）。返回处理的段数。"""
+        R0, Ra = model_r * k, ra * k
+        segs, edges, lines = [], [], []
+        for e in self._items():
+            t = retry(lambda: e.ObjectName)
+            if t in ("AcDbArc", "AcDbCircle"):
+                cc = retry(lambda: e.Center)
+                if math.hypot(cc[0] - c[0], cc[1] - c[1]) < tol and abs(retry(lambda: e.Radius) - R0) < tol:
+                    segs.append((t, e, None if t == "AcDbCircle" else (retry(lambda: e.StartAngle), retry(lambda: e.EndAngle))))
+            elif t == "AcDbLine":
+                lay = retry(lambda: e.Layer)
+                if lay in ("粗实线", "细实线"):
+                    a, b = retry(lambda: e.StartPoint), retry(lambda: e.EndPoint)
+                    lines.append((e, a, b))
+                    if lay == "粗实线":
+                        edges.append((a, b))
+
+        def inside(ang):
+            for _, _, sp in segs:
+                if sp is None:
+                    return True
+                d, full = (ang - sp[0]) % (2 * math.pi), (sp[1] - sp[0]) % (2 * math.pi)
+                if tol / R0 < d < full - tol / R0:
+                    return True
+            return False
+        for e, a, b in lines:
+            for end, q, o in ((0, a, b), (1, b, a)):
+                fx, fy = q[0] - c[0], q[1] - c[1]
+                if abs(math.hypot(fx, fy) - R0) >= tol or math.hypot(o[0] - c[0], o[1] - c[1]) <= R0 + tol \
+                        or not inside(math.atan2(fy, fx)):
+                    continue
+                dx, dy = o[0] - q[0], o[1] - q[1]; L2 = dx * dx + dy * dy
+                B, C = 2 * (fx * dx + fy * dy), fx * fx + fy * fy - Ra * Ra
+                v = (-B + math.sqrt(max(B * B - 4 * L2 * C, 0.0))) / (2 * L2)
+                if v >= 1 - tol / math.sqrt(L2):
+                    retry(lambda: e.Delete())
+                else:
+                    pt = P(q[0] + v * dx, q[1] + v * dy)
+                    retry(lambda: setattr(e, ("StartPoint", "EndPoint")[end], pt))
+                break
+
+        def extend(ang):
+            ex, ey = c[0] + R0 * math.cos(ang), c[1] + R0 * math.sin(ang)
+            for a, b in edges:
+                dx, dy = b[0] - a[0], b[1] - a[1]; L2 = dx * dx + dy * dy
+                if L2 < 1e-12:
+                    continue
+                f = ((ex - a[0]) * dx + (ey - a[1]) * dy) / L2
+                if not -0.01 <= f <= 1.01 or math.hypot(a[0] + f * dx - ex, a[1] + f * dy - ey) > tol:
+                    continue
+                fx, fy = a[0] - c[0], a[1] - c[1]
+                B, C = 2 * (fx * dx + fy * dy), fx * fx + fy * fy - Ra * Ra
+                disc = B * B - 4 * L2 * C
+                if disc < 0:
+                    continue
+                q = min(((a[0] + v * dx, a[1] + v * dy) for v in ((-B + sg * math.sqrt(disc)) / (2 * L2) for sg in (1, -1))),
+                        key=lambda p: math.hypot(p[0] - ex, p[1] - ey))
+                return math.atan2(q[1] - c[1], q[0] - c[0])
+            return ang
+        for t, e, span in segs:
+            if abs(model_r - r) < 1e-6:
+                retry(lambda: setattr(e, "Layer", "中心线"))
+            else:
+                retry(lambda: e.Delete())
+            self.layer("粗实线")
+            if span is None:
+                self.ms.AddCircle(P(*c), Ra)
+            else:
+                self.ms.AddArc(P(*c), Ra, extend(span[0]), extend(span[1]))
+        return len(segs)
 
     def rot_label(self, p, letter, ccw=True, angle=None, h=5):
         """旋转配置的斜视图/向视图标注（GB/T 4458.1）：字母 + 旋转符号（半圆弧加箭头，半径≈字高），
@@ -857,7 +1017,8 @@ class Sheet:
         """check() 的几何部分：
         ① 平行尺寸线间距 < min_gap（重叠范围内）——“挤但没重叠”；
         ② 引线箭头尖没落在任何图线 / 尺寸线端点上——“引线悬空”；
-        ③ 同一数值、同一方向的尺寸出现两次以上——“可能重复标注”（只是提示，链式里相同数值是正常的）。"""
+        ③ 同一数值、同一方向的尺寸出现两次以上——“可能重复标注”（只是提示，链式里相同数值是正常的）；
+        ④ 手写的极限偏差和公差带代号对不上（gbtol 查表）。"""
         issues = []
         D = self._dims
         for i in range(len(D)):
@@ -905,6 +1066,20 @@ class Sheet:
             dmin = min([dseg(tip, a, b) for a, b in pts_segs] + [abs(math.hypot(tip[0] - cc[0], tip[1] - cc[1]) - r) for cc, r in circ] + [99])
             if dmin > tip_tol:
                 issues.append((f"引线箭头悬空：离最近的图线 {dmin:.1f} mm", round(tip[0], 1), round(tip[1], 1)))
+        # ④ 手写的极限偏差和公差带代号对不对得上（查 GB/T 1800.1 表）
+        for e in self._items():
+            t = e.ObjectName
+            try:
+                s_ = e.TextOverride if "Dimension" in t else (e.TextString if t in ("AcDbText", "AcDbMText") else None)
+            except Exception:
+                continue
+            msg = gbtol.verify_text(s_) if s_ else None
+            if msg:
+                try:
+                    q = e.TextPosition if "Dimension" in t else e.InsertionPoint
+                except Exception:
+                    q = (0, 0)
+                issues.append((f"公差：{msg}", round(q[0], 1), round(q[1], 1)))
         # ③ 重复
         from collections import defaultdict
         seen = defaultdict(list)
@@ -962,7 +1137,7 @@ class Sheet:
                 set_pdf_device(lo)
                 lo.CanonicalMediaName = PDF_MEDIA[self.sheet]; lo.PlotType = 1
                 lo.UseStandardScale = False; lo.SetCustomScale(1, 1); lo.CenterPlot = True
-                lo.PlotRotation = 0; lo.PlotWithLineweights = True; lo.StyleSheet = "acad.ctb"
+                lo.PlotRotation = plot_rotation(self.sheet); lo.PlotWithLineweights = True; lo.StyleSheet = "acad.ctb"
                 doc.SetVariable("BACKGROUNDPLOT", 0)
                 if os.path.exists(pdf):
                     os.remove(pdf)
@@ -974,6 +1149,7 @@ class Sheet:
             for _ in range(40):
                 if os.path.exists(pdf): break
                 time.sleep(0.5)
+            upright_pdf(pdf, self.sheet)
         finally:
             for e in txt_old:
                 e.TrueColor = bylayer
@@ -983,7 +1159,7 @@ class Sheet:
         Bh, Lw = SHEETS[self.sheet][0], SHEETS[self.sheet][1]
         page = fitz.open(pdf)[0]
         pix = page.get_pixmap(matrix=fitz.Matrix(ppm * 25.4 / 72, ppm * 25.4 / 72), alpha=False)
-        img = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, 3).astype(int)
+        img = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, 3).astype(np.int16)   # int64 时 A0 要 2 GB 以上，内存紧时报 ArrayMemoryError（2026-11-09）
         R, G, Bc = img[..., 0], img[..., 1], img[..., 2]
         blue = (Bc > 140) & (R < 120) & (G < 120)
         # 别的墨迹：够暗、而且不偏蓝（蓝字边缘的抗锯齿像素是暗蓝色，实测会被误当成线：标题栏每个字都报压线）
@@ -1015,7 +1191,8 @@ class Sheet:
             for it in issues:
                 print("  ", it)
         self.check_pdf = pdf
-        geo = self.check_geometry(verbose)
+        self._idle(120)                       # 刚出完校核 PDF，AutoCAD 还在忙（实测紧接着逐个读对象被拒）
+        geo = retry(lambda: self.check_geometry(verbose), tries=5, delay=3)
         return issues + geo
 
     def title_block(self, name, code, material="", scale="1:1", weight="", qty="1",
@@ -1185,6 +1362,22 @@ class Sheet:
             print("unhatch 没找到包含", inside, "的剖面线"); return
         min(cands, key=lambda c: c[0])[1].Delete()
 
+    def stagger_hatches(self, details=(), tol=1.0, same=(), axes=(), sw=None):
+        """装配图相邻零件剖面线错开、同一零件各视图（含放大图）一致（GB/T 4457.5），参数见 gb_hatch.stagger_hatches。
+        放在 unhatch、hatch_material 之后。"""
+        import gb_hatch
+        return gb_hatch.stagger_hatches(self, sw, details, tol, same, axes)
+
+    def hatch_material(self, inside, material="非金属", scale=1.0):
+        """按材料换剖面符号："非金属" 交叉网格 ANSI37、"涂黑" SOLID（宽 ≤ 2 mm 的剖面），见 gb_hatch.hatch_material。"""
+        import gb_hatch
+        return gb_hatch.hatch_material(self, inside, material, scale)
+
+    def narrow_hatches(self, w=2.0):
+        """宽度 ≤ w（图纸 mm）的剖面 [(内部一点, 宽度)]，国标允许涂黑，见 gb_hatch.narrow_hatches。"""
+        import gb_hatch
+        return gb_hatch.narrow_hatches(self, w)
+
     def move_label(self, text, to, near=None):
         """挪 SW 的视图标注（如 "A-A"），避免和尺寸打架。near=(x,y) 时只挪离它最近的那个同名标注。"""
         import re
@@ -1239,13 +1432,15 @@ class Sheet:
             set_pdf_device(lay)
             lay.CanonicalMediaName = PDF_MEDIA[self.sheet]; lay.PlotType = 1
             lay.UseStandardScale = False; lay.SetCustomScale(1, 1); lay.CenterPlot = True
-            lay.PlotRotation = 0; lay.PlotWithLineweights = True; lay.StyleSheet = "monochrome.ctb"
+            lay.PlotRotation = plot_rotation(self.sheet); lay.PlotWithLineweights = True; lay.StyleSheet = "monochrome.ctb"
             doc.SetVariable("BACKGROUNDPLOT", 0)
             doc.Plot.PlotToFile(pdf)
         retry(plot, tries=60, delay=0.5)
         for _ in range(30):
             if os.path.exists(pdf): break
             time.sleep(0.5)
+        if os.path.exists(pdf):
+            upright_pdf(pdf, self.sheet)
         print("DWG", self.out, "| PDF", pdf if os.path.exists(pdf) else "失败")
         if os.path.exists(pdf):              # 打印用 NoView pc3 后 PDF 不再被 WPS 锁住：把同名的旧时间戳 PDF 清掉
             import glob, re
@@ -1255,3 +1450,17 @@ class Sheet:
                     try: os.remove(old)
                     except OSError: pass
         return False
+
+
+# 规定画法（外螺纹、花键、弹簧、锥齿轮、蜗杆蜗轮）在 conv.py，挂成 Sheet 的方法：s.thread_shaft(...) 等
+import conv as _conv
+for _m in _conv.METHODS:
+    setattr(Sheet, _m, getattr(_conv, _m))
+# 粗糙度 / 形位公差 / 基准 / 序号自动放置在 placer.py：s.auto_rough(...) 等
+import placer as _placer
+for _m in _placer.METHODS:
+    setattr(Sheet, _m, getattr(_placer, _m))
+# 尺寸完整性审查在 audit.py：s.audit_dims(features, [(仿射, 视图框), ...])
+import audit as _audit
+for _m in _audit.METHODS:
+    setattr(Sheet, _m, getattr(_audit, _m))

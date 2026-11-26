@@ -3,7 +3,7 @@
 import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from sw2acad import Sheet, P
 
-D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+D = os.path.dirname(os.path.abspath(__file__)), "out"
 VIEWS = [(50, 140, 380, 240), (50, 100, 380, 140)]
 with Sheet(D + r"\plate_sw.DWG", D + r"\plate_gb.dwg", views=VIEWS, view_scale=2) as s:
     s.frame()

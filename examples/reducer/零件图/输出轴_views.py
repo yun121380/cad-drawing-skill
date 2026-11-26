@@ -7,6 +7,7 @@ import sw_views as V
 D = os.path.dirname(os.path.abspath(__file__))
 part = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "输出轴.SLDPRT")
 sw = V.connect()
+V.part_features(sw, part, os.path.join(D, "输出轴_features.json"))   # 给 audit_dims 核对尺寸用
 drw = V.new_drawing(sw, "A3")
 main = V.model_view(drw, part, "*右视", (190, 195))
 V.finish(drw, [main])
